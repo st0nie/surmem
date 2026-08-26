@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SurpriseMemory, WriteVerdict, Kind, SqlitePersister } from "../src/index";
+import { Kind, SqlitePersister, SurpriseMemory, WriteVerdict } from "../src/index";
 
 function makeMem(extra: Record<string, unknown> = {}): SurpriseMemory {
   return new SurpriseMemory({
@@ -35,15 +35,30 @@ describe("surprise gate", () => {
     expect(mem.store.active()[0].baseStrength).toBeGreaterThan(1);
   });
 
-  test("conflicting information UPDATEs and supersedes the old memory", async () => {
+  test("related facts are not destructively UPDATEd without a judge", async () => {
     const mem = makeMem();
+    await mem.observe("The user just moved from Beijing to Shanghai.");
+    const r = await mem.observe("The user moved from Beijing back to Shanghai again.");
+    expect(r.verdict).not.toBe(WriteVerdict.UPDATE);
+    expect(mem.store.all()[0].supersededBy).toBeNull();
+  });
+
+  test("a high-confidence judge can UPDATE and supersede an old memory", async () => {
+    const mem = makeMem({
+      gate: {
+        tauAdd: 0.45,
+        dupSim: 0.85,
+        conflictSim: 0.55,
+        judge: { arbitrate: async () => ({ verdict: "UPDATE", confidence: 0.95 }) },
+      },
+    });
     await mem.observe("The user just moved from Beijing to Shanghai.");
     const r = await mem.observe("The user moved from Beijing back to Shanghai again.");
     expect(r.verdict).toBe(WriteVerdict.UPDATE);
     expect(r.superseded).not.toBeNull();
-    // Superseded memory is excluded from the active set.
-    const texts = mem.store.active().map((m) => m.text);
-    expect(texts).not.toContain("The user just moved from Beijing to Shanghai.");
+    expect(mem.store.active().map((memory) => memory.text)).not.toContain(
+      "The user just moved from Beijing to Shanghai.",
+    );
   });
 
   test("trivial input is NOOPed", async () => {
@@ -78,7 +93,14 @@ describe("retrieval", () => {
   });
 
   test("superseded memories are never recalled", async () => {
-    const mem = makeMem();
+    const mem = makeMem({
+      gate: {
+        tauAdd: 0.45,
+        dupSim: 0.85,
+        conflictSim: 0.55,
+        judge: { arbitrate: async () => ({ verdict: "UPDATE", confidence: 1 }) },
+      },
+    });
     await mem.observe("The user just moved from Beijing to Shanghai.");
     await mem.observe("The user moved from Beijing back to Shanghai again.");
     const hits = await mem.recall("where does the user live");
@@ -90,7 +112,9 @@ describe("decay and forgetting", () => {
   test("effective strength decays over time", async () => {
     const mem = makeMem();
     const r = await mem.observe("The user loves spicy Sichuan food.");
-    const rec = r.record!;
+    const rec = r.record;
+    expect(rec).not.toBeNull();
+    if (!rec) throw new Error("expected a record");
     const s0 = mem.store.effectiveStrength(rec);
     rec.lastAccessed -= 5 * 24 * 3600; // age 5 days
     const s1 = mem.store.effectiveStrength(rec);
@@ -130,8 +154,18 @@ describe("decay and forgetting", () => {
   test("semantic memories decay much slower than episodic ones", () => {
     const mem = makeMem();
     const fiveDaysAgo = Date.now() / 1000 - 5 * 24 * 3600;
-    const episodic = { lastAccessed: fiveDaysAgo, baseStrength: 1, accessCount: 0, kind: Kind.EPISODIC } as never;
-    const semantic = { lastAccessed: fiveDaysAgo, baseStrength: 1, accessCount: 0, kind: Kind.SEMANTIC } as never;
+    const episodic = {
+      lastAccessed: fiveDaysAgo,
+      baseStrength: 1,
+      accessCount: 0,
+      kind: Kind.EPISODIC,
+    } as never;
+    const semantic = {
+      lastAccessed: fiveDaysAgo,
+      baseStrength: 1,
+      accessCount: 0,
+      kind: Kind.SEMANTIC,
+    } as never;
     const se = mem.store.effectiveStrength(episodic);
     const ss = mem.store.effectiveStrength(semantic);
     expect(ss).toBeGreaterThan(se);
@@ -226,6 +260,8 @@ describe("persistence", () => {
       // preserve similarity rankings.
       const hits = await mem2.recall("What food does the user like?");
       expect(hits[0].record.text).toContain("Sichuan");
+      await mem1.close();
+      await mem2.close();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

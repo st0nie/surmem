@@ -1,16 +1,68 @@
 {
-  "name": "surmem",
-  "version": "0.1.0",
-  "description": "Surprise-gated, agent-agnostic memory framework",
+  "name": "pi-surmem",
+  "version": "1.0.0",
+  "description": "Production-grade surprise-gated semantic memory for Pi: scoped, safe, crash-resistant, and zero-config",
   "type": "module",
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "extensions",
+    "README.md",
+    "ARCHITECTURE.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/surmem/index.ts"
+    ]
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "memory",
+    "semantic-memory",
+    "long-term-memory",
+    "sqlite",
+    "embeddings",
+    "surprise-gate",
+    "session-search",
+    "procedural-memory",
+    "secret-scanning"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/st0nie/surmem.git"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
-    "demo": "bun run demo.ts"
+    "demo": "bun run demo.ts",
+    "test": "bun test",
+    "typecheck": "bun x tsc --noEmit && bun x tsc -p extensions/surmem/tsconfig.json",
+    "lint": "bun x biome check .",
+    "check": "bun run typecheck && bun run lint && bun test",
+    "pack:check": "bun pm pack --dry-run",
+    "smoke:gguf": "bun run scripts/gguf-smoke.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.84.0",
+    "@earendil-works/pi-coding-agent": ">=0.84.0",
+    "typebox": ">=1.0.0"
+  },
+  "optionalDependencies": {
+    "node-llama-cpp": "^3.20.0"
   },
   "devDependencies": {
-    "@types/bun": "^1.4.0"
-  },
-  "dependencies": {
-    "node-llama-cpp": "^3.20.0"
+    "@biomejs/biome": "^2.2.4",
+    "@earendil-works/pi-ai": "^0.84.3",
+    "@earendil-works/pi-coding-agent": "^0.84.3",
+    "@types/bun": "^1.4.0",
+    "typebox": "^1.3.19",
+    "typescript": "^5.9.3"
   }
 }

@@ -12,16 +12,28 @@
  * Run: bun run demo.ts
  */
 
-import { SurpriseMemory } from "./src/index";
+import { SurpriseMemory, WriteVerdict } from "./src/index";
 
 function show(title: string): void {
-  console.log("\n" + "=".repeat(60));
+  console.log(`\n${"=".repeat(60)}`);
   console.log(title);
   console.log("=".repeat(60));
 }
 
 const mem = new SurpriseMemory({
-  gate: { tauAdd: 0.45, dupSim: 0.85, conflictSim: 0.55 },
+  gate: {
+    tauAdd: 0.45,
+    dupSim: 0.85,
+    conflictSim: 0.55,
+    // A deterministic demo arbiter. Production can use OpenAIJudge; without a
+    // judge SurMem deliberately avoids destructive UPDATE decisions.
+    judge: {
+      arbitrate: async (newText, oldText) =>
+        newText.includes("moved") && oldText.includes("moved")
+          ? { verdict: WriteVerdict.UPDATE, confidence: 1 }
+          : { verdict: WriteVerdict.ADD, confidence: 1 },
+    },
+  },
   consolidation: { clusterSim: 0.3 }, // tuned for the built-in hash embedder
   store: { decayRatePerHour: 0.02, forgetThreshold: 0.15 },
 });
@@ -82,7 +94,7 @@ for (const rec of forgotten) console.log(`  [forgotten] ${rec.text}`);
 
 console.log("\nRemaining memories after decay:");
 for (const rec of mem.store.active()) {
-  console.log(
-    `  [${rec.kind} | strength=${mem.store.effectiveStrength(rec).toFixed(2)}] ${rec.text}`,
-  );
+  console.log(`  [${rec.kind} | strength=${mem.store.effectiveStrength(rec).toFixed(2)}] ${rec.text}`);
 }
+
+await mem.close();

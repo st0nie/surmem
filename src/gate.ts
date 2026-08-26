@@ -1,43 +1,32 @@
-/**
- * SurpriseGate: the write-side policy of SurMem.
- *
- * Inspired by Titans' surprise-driven memory updates, but computed externally so
- * it works with any agent and any LLM:
- *
- *   novelty = 1 - max cosine(new_embedding, existing_memories)
- *
- * Verdicts (by similarity to the nearest active memory):
- *   sim >= dupSim                 -> REINFORCE (near-duplicate: spacing effect)
- *   conflictSim <= sim < dupSim   -> UPDATE    (same topic, different content:
- *                                               supersede or judge-arbitrate)
- *   novelty > tauAdd              -> ADD       (genuinely new information)
- *   otherwise                     -> NOOP      (routine, low-value)
- *
- * A Titans-style momentum term accumulates novelty over a sliding window, so a
- * *stream* of mildly-novel events about one topic can cross the write threshold.
- * An optional LLMJudge arbitrates the conflict zone (paraphrase vs contradiction).
- */
+/** Surprise-gated write policy with strict verdict validation. */
 
 import { cosine, tokenCount } from "./embeddings";
+import { ValidationError } from "./errors";
 import type { MemoryRecord } from "./types";
 import { WriteVerdict } from "./types";
 
-/** Optional arbitrator for the conflict zone. */
+export interface LLMJudgeDecision {
+  verdict: WriteVerdict | string;
+  confidence?: number;
+  reason?: string;
+}
+
 export interface LLMJudge {
-  /**
-   * Given the new text and the most similar existing memory, return
-   * "ADD" (new fact), "UPDATE" (contradicts/replaces), "REINFORCE" or "NOOP".
-   */
-  arbitrate(newText: string, nearestText: string): string | Promise<string>;
+  arbitrate(
+    newText: string,
+    nearestText: string,
+    signal?: AbortSignal,
+  ): string | LLMJudgeDecision | Promise<string | LLMJudgeDecision>;
 }
 
 export interface GateOptions {
-  tauAdd?: number; // momentum-adjusted novelty above this -> ADD (default 0.45)
-  dupSim?: number; // similarity above this -> REINFORCE (default 0.85)
-  conflictSim?: number; // similarity above this -> UPDATE zone (default 0.6)
-  minTokens?: number; // observations shorter than this -> NOOP (default 3)
-  momentumDecay?: number; // per-second decay of novelty momentum (default 0.8)
-  momentumWindowS?: number; // sliding window for momentum (default 300)
+  tauAdd?: number;
+  dupSim?: number;
+  conflictSim?: number;
+  minTokens?: number;
+  momentumDecay?: number;
+  momentumWindowS?: number;
+  minJudgeConfidence?: number;
   judge?: LLMJudge;
 }
 
@@ -45,6 +34,29 @@ export interface GateDecision {
   verdict: WriteVerdict;
   surprise: number;
   nearest: MemoryRecord | null;
+  reason?: string;
+}
+
+function unitInterval(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0 || value > 1)
+    throw new ValidationError(`${name} must be between 0 and 1.`);
+  return value;
+}
+
+function positive(value: number, name: string, allowZero = false): number {
+  if (!Number.isFinite(value) || (allowZero ? value < 0 : value <= 0))
+    throw new ValidationError(`${name} must be ${allowZero ? "non-negative" : "positive"}.`);
+  return value;
+}
+
+function strictVerdict(value: unknown): WriteVerdict | null {
+  const raw =
+    typeof value === "string"
+      ? value
+      : value && typeof value === "object" && "verdict" in value
+        ? String((value as { verdict: unknown }).verdict)
+        : "";
+  return Object.values(WriteVerdict).includes(raw as WriteVerdict) ? (raw as WriteVerdict) : null;
 }
 
 export class SurpriseGate {
@@ -54,22 +66,27 @@ export class SurpriseGate {
   private minTokens: number;
   private momentumDecay: number;
   private momentumWindowS: number;
+  private minJudgeConfidence: number;
   private judge?: LLMJudge;
   private noveltyWindow: Array<{ ts: number; novelty: number }> = [];
 
   constructor(opts: GateOptions = {}) {
-    this.tauAdd = opts.tauAdd ?? 0.45;
-    this.dupSim = opts.dupSim ?? 0.85;
-    this.conflictSim = opts.conflictSim ?? 0.6;
-    this.minTokens = opts.minTokens ?? 3;
-    this.momentumDecay = opts.momentumDecay ?? 0.8;
-    this.momentumWindowS = opts.momentumWindowS ?? 300;
+    this.tauAdd = unitInterval(opts.tauAdd ?? 0.45, "tauAdd");
+    this.dupSim = unitInterval(opts.dupSim ?? 0.85, "dupSim");
+    this.conflictSim = unitInterval(opts.conflictSim ?? 0.6, "conflictSim");
+    this.minTokens = Math.floor(positive(opts.minTokens ?? 3, "minTokens"));
+    this.momentumDecay = unitInterval(opts.momentumDecay ?? 0.8, "momentumDecay");
+    this.momentumWindowS = positive(opts.momentumWindowS ?? 300, "momentumWindowS");
+    this.minJudgeConfidence = unitInterval(opts.minJudgeConfidence ?? 0.65, "minJudgeConfidence");
     this.judge = opts.judge;
+    this.assertThresholds();
   }
 
-  /** Current gate configuration. */
-  get config(): Required<Omit<GateOptions, "judge" | "momentumDecay" | "momentumWindowS">> &
-    Pick<GateOptions, "momentumDecay" | "momentumWindowS"> {
+  private assertThresholds(): void {
+    if (this.conflictSim >= this.dupSim) throw new ValidationError("conflictSim must be lower than dupSim.");
+  }
+
+  get config() {
     return {
       tauAdd: this.tauAdd,
       dupSim: this.dupSim,
@@ -77,32 +94,39 @@ export class SurpriseGate {
       minTokens: this.minTokens,
       momentumDecay: this.momentumDecay,
       momentumWindowS: this.momentumWindowS,
+      minJudgeConfidence: this.minJudgeConfidence,
     };
   }
 
-  /** Update thresholds at runtime (e.g. from a config command). */
   configure(opts: Partial<GateOptions>): void {
-    if (opts.tauAdd !== undefined) this.tauAdd = opts.tauAdd;
-    if (opts.dupSim !== undefined) this.dupSim = opts.dupSim;
-    if (opts.conflictSim !== undefined) this.conflictSim = opts.conflictSim;
-    if (opts.minTokens !== undefined) this.minTokens = opts.minTokens;
-    if (opts.momentumDecay !== undefined) this.momentumDecay = opts.momentumDecay;
-    if (opts.momentumWindowS !== undefined) this.momentumWindowS = opts.momentumWindowS;
-    if (opts.judge !== undefined) this.judge = opts.judge;
+    const previous = this.config;
+    try {
+      if (opts.tauAdd !== undefined) this.tauAdd = unitInterval(opts.tauAdd, "tauAdd");
+      if (opts.dupSim !== undefined) this.dupSim = unitInterval(opts.dupSim, "dupSim");
+      if (opts.conflictSim !== undefined) this.conflictSim = unitInterval(opts.conflictSim, "conflictSim");
+      if (opts.minTokens !== undefined) this.minTokens = Math.floor(positive(opts.minTokens, "minTokens"));
+      if (opts.momentumDecay !== undefined)
+        this.momentumDecay = unitInterval(opts.momentumDecay, "momentumDecay");
+      if (opts.momentumWindowS !== undefined)
+        this.momentumWindowS = positive(opts.momentumWindowS, "momentumWindowS");
+      if (opts.minJudgeConfidence !== undefined)
+        this.minJudgeConfidence = unitInterval(opts.minJudgeConfidence, "minJudgeConfidence");
+      if (opts.judge !== undefined) this.judge = opts.judge;
+      this.assertThresholds();
+    } catch (error) {
+      Object.assign(this, previous);
+      throw error;
+    }
   }
 
-  /** Titans-style momentum: surprise now + decayed surprise of recent past. */
   private momentum(novelty: number): number {
     const now = Date.now() / 1000;
-    this.noveltyWindow = this.noveltyWindow.filter(
-      (e) => now - e.ts <= this.momentumWindowS,
-    );
+    this.noveltyWindow = this.noveltyWindow.filter((entry) => now - entry.ts <= this.momentumWindowS);
     const past = this.noveltyWindow.reduce(
-      (s, e) => s + e.novelty * this.momentumDecay ** Math.max(0, Math.floor(now - e.ts)),
+      (sum, entry) => sum + entry.novelty * this.momentumDecay ** Math.max(0, Math.floor(now - entry.ts)),
       0,
     );
     this.noveltyWindow.push({ ts: now, novelty });
-    // Normalize so a single isolated event returns roughly its own novelty.
     return Math.min(1, novelty + 0.25 * past);
   }
 
@@ -110,41 +134,52 @@ export class SurpriseGate {
     text: string,
     vector: number[],
     existing: MemoryRecord[],
+    signal?: AbortSignal,
   ): Promise<GateDecision> {
-    // Triviality filter: no meaningful content, no memory.
-    if (tokenCount(text) < this.minTokens) {
-      return { verdict: WriteVerdict.NOOP, surprise: 0, nearest: null };
-    }
+    if (tokenCount(text) < this.minTokens)
+      return { verdict: WriteVerdict.NOOP, surprise: 0, nearest: null, reason: "too-short" };
+    const active = existing.filter((memory) => memory.supersededBy === null);
+    if (active.length === 0)
+      return { verdict: WriteVerdict.ADD, surprise: 1, nearest: null, reason: "first-memory" };
 
-    const active = existing.filter((m) => m.supersededBy === null);
-    if (active.length === 0) {
-      return { verdict: WriteVerdict.ADD, surprise: 1.0, nearest: null };
-    }
-
-    const nearest = active.reduce((best, m) =>
-      cosine(vector, m.vector) > cosine(vector, best.vector) ? m : best,
-    );
-    const sim = cosine(vector, nearest.vector);
-    const novelty = this.momentum(1 - sim);
-
-    if (sim >= this.dupSim) {
-      return { verdict: WriteVerdict.REINFORCE, surprise: novelty, nearest };
-    }
-
-    // Conflict zone: same topic, different content. Without a judge we assume
-    // the newer statement supersedes the older one (recency wins).
-    if (sim >= this.conflictSim) {
-      if (this.judge) {
-        const v = await this.judge.arbitrate(text, nearest.text);
-        return { verdict: v as WriteVerdict, surprise: novelty, nearest };
+    let nearest = active[0];
+    let similarity = cosine(vector, nearest.vector);
+    for (const memory of active.slice(1)) {
+      const candidate = cosine(vector, memory.vector);
+      if (candidate > similarity) {
+        nearest = memory;
+        similarity = candidate;
       }
-      return { verdict: WriteVerdict.UPDATE, surprise: novelty, nearest };
+    }
+    const surprise = this.momentum(Math.max(0, 1 - similarity));
+    if (similarity >= this.dupSim)
+      return { verdict: WriteVerdict.REINFORCE, surprise, nearest, reason: "near-duplicate" };
+
+    if (similarity >= this.conflictSim && this.judge) {
+      const raw = await this.judge.arbitrate(text, nearest.text, signal);
+      const verdict = strictVerdict(raw);
+      const confidence =
+        typeof raw === "object" && raw && "confidence" in raw
+          ? Number((raw as LLMJudgeDecision).confidence ?? 1)
+          : 1;
+      const reason =
+        typeof raw === "object" && raw && "reason" in raw
+          ? String((raw as LLMJudgeDecision).reason ?? "judge")
+          : "judge";
+      if (verdict && Number.isFinite(confidence) && confidence >= this.minJudgeConfidence) {
+        return { verdict, surprise, nearest, reason };
+      }
+      return {
+        verdict: surprise > this.tauAdd ? WriteVerdict.ADD : WriteVerdict.NOOP,
+        surprise,
+        nearest,
+        reason: "uncertain-judge",
+      };
     }
 
-    if (novelty > this.tauAdd) {
-      return { verdict: WriteVerdict.ADD, surprise: novelty, nearest };
-    }
-
-    return { verdict: WriteVerdict.NOOP, surprise: novelty, nearest };
+    // Similarity alone cannot prove a contradiction. Without a judge, preserve
+    // related facts independently rather than destructively superseding one.
+    if (surprise > this.tauAdd) return { verdict: WriteVerdict.ADD, surprise, nearest, reason: "novel" };
+    return { verdict: WriteVerdict.NOOP, surprise, nearest, reason: "low-surprise" };
   }
 }

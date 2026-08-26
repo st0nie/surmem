@@ -10,11 +10,11 @@
  * Run: bun run scripts/gguf-smoke.ts
  */
 
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { existsSync } from "node:fs";
 
-import { GgufEmbedder, cosine } from "../src/index";
+import { cosine, GgufEmbedder } from "../src/index";
 
 const MODEL_PATH =
   process.env.SURMEM_GGUF_MODEL_PATH ??
@@ -42,23 +42,27 @@ const [qFood] = await pair.query.embed(["What kind of cuisine does the user enjo
 const [qDeploy] = await pair.query.embed(["How do I deploy the app?"]);
 
 console.log("\nSimilarity of 'What kind of cuisine does the user enjoy?' to docs:");
-docs.forEach((d, i) => console.log(`  ${cosine(qFood, docVecs[i]).toFixed(3)}  ${d}`));
+docs.forEach((d, i) => {
+  console.log(`  ${cosine(qFood, docVecs[i]).toFixed(3)}  ${d}`);
+});
 
 console.log("\nSimilarity of 'How do I deploy the app?' to docs:");
-docs.forEach((d, i) => console.log(`  ${cosine(qDeploy, docVecs[i]).toFixed(3)}  ${d}`));
+docs.forEach((d, i) => {
+  console.log(`  ${cosine(qDeploy, docVecs[i]).toFixed(3)}  ${d}`);
+});
 
 // Paraphrase check: the hash embedder fails this; a real model should not.
 const [paraA] = await pair.document.embed(["The user relocated from Beijing to Shanghai."]);
 const simPara = cosine(paraA, docVecs[2]);
 console.log(`\nParaphrase similarity (relocated vs moved): ${simPara.toFixed(3)}`);
 
-const foodBest = cosine(qFood, docVecs[0]) > cosine(qFood, docVecs[1]) &&
+const foodBest =
+  cosine(qFood, docVecs[0]) > cosine(qFood, docVecs[1]) &&
   cosine(qFood, docVecs[0]) > cosine(qFood, docVecs[2]);
-const deployBest = cosine(qDeploy, docVecs[1]) > cosine(qDeploy, docVecs[0]) &&
+const deployBest =
+  cosine(qDeploy, docVecs[1]) > cosine(qDeploy, docVecs[0]) &&
   cosine(qDeploy, docVecs[1]) > cosine(qDeploy, docVecs[2]);
 
-console.log("\n" + (foodBest && deployBest && simPara > 0.8
-  ? "SMOKE TEST PASSED"
-  : "SMOKE TEST FAILED"));
+console.log(`\n${foodBest && deployBest && simPara > 0.8 ? "SMOKE TEST PASSED" : "SMOKE TEST FAILED"}`);
 
 await (pair.document as GgufEmbedder).dispose();

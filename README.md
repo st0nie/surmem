@@ -1,284 +1,279 @@
-# SurMem
+# Pi SurMem
 
-**Surprise-gated, agent-agnostic long-term memory framework** — TypeScript, zero
-required runtime dependencies, Bun-first.
+Production-grade long-term memory for [Pi](https://pi.dev): **surprise-gated learning, native hybrid retrieval, scoped SQLite storage, session search, safety scanning, and Pi-native procedural skills**.
 
-Inspired by Google's [Titans](https://arxiv.org/abs/2501.00663) ("learning to
-memorize at test time"), but implemented as an **external** memory layer so it
-works with any agent and any LLM:
+> Remember what is novel, reinforce what repeats, supersede only proven contradictions, and forget weak episodic traces.
 
-> Store what is surprising. Reinforce what repeats. Forget what is routine.
+## Why SurMem
 
----
+SurMem was explicitly benchmarked against [`pi-memory`](https://pi.dev/packages/pi-memory) 0.4.2 and [`pi-hermes-memory`](https://pi.dev/packages/pi-hermes-memory) 0.9.6.
 
-## Design
+| Capability | pi-memory | pi-hermes-memory | SurMem |
+|---|---:|---:|---:|
+| Zero-config durable memory | Markdown | Markdown + SQLite | **Built-in SQLite** |
+| Semantic memory search | qmd required | Keyword FTS5 | **Native vector + lexical hybrid** |
+| External/native dependency required | qmd for semantic search | `better-sqlite3` ABI | **No** (Bun/Node built-in SQLite) |
+| Global + project scope | Global | Global + project | **Global + canonical project isolation** |
+| Surprise gate / reinforcement / decay | No | Aging for consolidation | **Yes** |
+| Episodic → semantic consolidation | No | LLM consolidation | **Idempotent native consolidation; optional LLM summary** |
+| Cross-session conversation search | No | SQLite FTS5 | **SQLite FTS5, CJK fallback, incremental indexing** |
+| Secret and injection scanning | No | Yes | **Yes, before every durable write** |
+| Recoverable deletion | Yes | No dedicated recovery ID | **Yes** |
+| Embedding model migration | qmd-managed | N/A | **Fingerprint detection + automatic reindex** |
+| Multi-process write safety | File-oriented | Atomic/SQLite locks | **Revision CAS, merge, tombstones, WAL** |
+| Pi-native procedural skills | No | Yes | **Yes, structured and safety-scanned** |
+| Full memory prompt tax by default | Bounded snapshot | Policy-only | **Policy + small cache-stable snapshot + on-demand recall** |
 
-### Why surprise?
+SurMem's main differentiator is not “more automatic LLM calls.” It is a single coherent cognitive store with semantic retrieval and explicit data-integrity guarantees. Automatic candidates are transient and require the main agent to confirm them, avoiding silent memory pollution.
 
-Humans don't remember every brick on their daily commute, but they do remember
-the deer that suddenly appeared on the road. The value of a memory is
-proportional to how unexpected its information is. Titans uses next-token
-prediction error as its surprise signal inside the model; since we cannot
-instrument an arbitrary agent's model internals, we approximate surprise with
-**externally computable signals**:
+## Install
 
-| Titans (internal)                  | SurMem (external proxy)                                       |
-| ---------------------------------- | ------------------------------------------------------------- |
-| Next-token prediction error        | **Semantic novelty**: 1 − max cosine(new embedding, memories) |
-| Momentum term (sustained surprise) | Accumulated novelty over a sliding time window                |
-| Decay gate (forgetting)            | Ebbinghaus-style strength decay + retrieval reinforcement     |
-
-An optional LLM judge arbitrates the ambiguous middle zone (is this a new fact,
-or does it contradict an old one?).
-
-### Architecture
-
-```
-                        ┌─────────────────────────────────────────────┐
-   Agent event stream ─▶│  SurpriseGate (write-side policy)            │
-   (observe)            │                                              │
-                        │   novelty = 1 − max cos(emb, memories)       │
-                        │                                              │
-                        │   novelty > tauAdd     → ADD (new memory)    │
-                        │   sim     > dupSim     → REINFORCE (spacing) │
-                        │   conflict zone        → UPDATE (supersede)  │
-                        │   trivial / routine    → NOOP (discard)      │
-                        └──────┬──────────────────────┬───────────────┘
-                               ▼                      ▼
-                    ┌──────────────────┐   ┌──────────────────────┐
-                    │ Episodic store   │   │ Semantic store       │
-                    │ raw, timestamped │──▶│ consolidated facts   │
-                    │ decays fast      │consolidate│ decays slow   │
-                    └──────────────────┘   └──────────────────────┘
-                               │                      ▲
-                               ▼                      │
-                    ┌─────────────────────────────────┴───────────┐
-                    │ Consolidator                                │
-                    │ periodically clusters episodic memories and │
-                    │ distills them into semantic facts           │
-                    └─────────────────────────────────────────────┘
-
-   Agent query ─────▶  Retriever: score = α·relevance + β·recency + γ·strength
-                       strength = base · (1+ln(1+accessCount)) · exp(−λ·hours)
-                       strength < threshold → forgotten (rescuable via REINFORCE)
-```
-
-### Cognitive layers
-
-- **Episodic memory**: raw events with timestamps, recorded verbatim, decays fast
-- **Semantic memory**: distilled by the consolidator from episodic clusters;
-  stable, high-strength, decays ~10× slower
-- **Procedural memory**: reserved interface — skills/workflows can be stored as
-  special semantic memories
-
-### Agent-agnostic design
-
-1. **Two-call integration**: `await mem.observe(text)` (write path) and
-   `await mem.recall(query)` (read path) plug into any agent loop.
-2. **Pluggable embedder**: built-in zero-dependency `HashEmbedder` for demos;
-   `GgufEmbedder` for fully local embeddings via node-llama-cpp (the same
-   embeddinggemma-300M / Qwen3-Embedding models qmd uses); `OpenAIEmbedder`
-   for any OpenAI-compatible `/embeddings` endpoint (OpenAI, vLLM, Ollama,
-   llama.cpp).
-3. **Pluggable LLM judge / summarizer**: optional; without them the gate falls
-   back to recency-wins conflict resolution and representative promotion.
-4. **Runtime-configurable**: all gate/store thresholds can be tuned live via
-   `mem.configure()` (the pi extension exposes this as `/surmem`).
-5. **Replaceable persistence**: in-memory by default; JSON and SQLite
-   persisters built in; vector DBs can be added behind the same interface.
-
-### Honest limitations
-
-- External novelty ≠ Titans' true prediction-error surprise: a well-known fact
-  absent from the store still counts as "surprising".
-- Thresholds are hand-tuned per embedding model (cosine distributions vary).
-  The long-term fix is an RL-trained write policy (see Roadmap).
-- `HashEmbedder` does not understand paraphrases; use a real embedding model
-  for anything serious.
-
-### Project layout
-
-```
-src/
-  types.ts            # MemoryRecord / WriteVerdict / Kind
-  embeddings.ts       # Embedder interface, HashEmbedder, OpenAIEmbedder
-  local-embedder.ts   # GgufEmbedder (node-llama-cpp, qmd-compatible models)
-  gate.ts             # SurpriseGate: novelty + momentum + runtime-configurable verdicts
-  store.ts            # two-layer store, Ebbinghaus decay, runtime-configurable
-  persistence.ts      # JsonPersister / SqlitePersister
-  retrieval.ts        # hybrid scoring (relevance + recency + strength)
-  consolidation.ts    # episodic cluster -> semantic fact
-  judge.ts            # OpenAIJudge (conflict arbitration), OpenAISummarizer
-  index.ts            # SurpriseMemory facade + public exports
-demo.ts               # full lifecycle demo (bun run demo.ts)
-tests/                # bun test suite (14 tests)
-scripts/gguf-smoke.ts # local-model smoke test
-extensions/surmem/    # pi coding-agent extension
-```
-
----
-
-## Quick start
+From this repository:
 
 ```bash
-bun install
-bun run demo.ts     # full lifecycle: gate verdicts, recall, consolidation, forgetting
-bun test            # unit tests
+pi install git:github.com/st0nie/surmem
 ```
 
-```typescript
-import { SurpriseMemory } from "./src/index";
-
-const mem = new SurpriseMemory({
-  store: { persistPath: "./memory.json" },
-});
-await mem.load();
-
-// Write path — gated by surprise
-await mem.observe("The user moved from Beijing to Shanghai.");   // ADD
-await mem.observe("The user moved from Beijing to Shanghai.");   // REINFORCE
-await mem.observe("The user moved back to Beijing last week.");  // UPDATE (supersedes)
-await mem.observe("ok");                                          // NOOP
-
-// Read path — inject into your agent's prompt
-console.log(await mem.recallAsContext("Where does the user live?"));
-
-// Periodic maintenance
-await mem.reflect();    // consolidate episodic clusters -> semantic facts
-mem.forgetPass();       // prune memories whose strength decayed away
-await mem.save();
-
-// Runtime tuning (also exposed as /surmem in the pi extension)
-mem.configure({ gate: { tauAdd: 0.5 }, store: { forgetThreshold: 0.2 } });
-```
-
-## Production configuration
-
-Fully local (zero API cost, qmd's embedding model):
-
-```typescript
-import { GgufEmbedder, SurpriseMemory, SqlitePersister } from "./src/index";
-
-const pair = GgufEmbedder.createPair({
-  modelPath: `${process.env.HOME}/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf`,
-  dim: 768,
-});
-const mem = new SurpriseMemory({
-  embedder: pair.document,
-  queryEmbedder: pair.query,
-  store: { persister: new SqlitePersister("./memory.sqlite") },
-});
-```
-
-OpenAI-compatible endpoint (OpenAI / vLLM / Ollama / llama.cpp) with LLM
-arbitration and consolidation summaries:
-
-```typescript
-import {
-  SurpriseMemory,
-  OpenAIEmbedder,
-  OpenAIJudge,
-  OpenAISummarizer,
-} from "./src/index";
-
-const mem = new SurpriseMemory({
-  embedder: new OpenAIEmbedder({
-    apiKey: process.env.OPENAI_API_KEY!,
-    model: "text-embedding-3-small",
-    // baseUrl: "http://localhost:8080/v1",
-  }),
-  gate: {
-    judge: new OpenAIJudge({ apiKey: process.env.OPENAI_API_KEY!, model: "gpt-4o-mini" }),
-  },
-  consolidation: {
-    summarizer: new OpenAISummarizer({ apiKey: process.env.OPENAI_API_KEY!, model: "gpt-4o-mini" }),
-  },
-  store: { persistPath: "./memory.json" },
-});
-```
-
-## pi coding-agent extension
-
-Load once for testing:
+For local development:
 
 ```bash
-pi -e ./extensions/surmem/index.ts
+pi install /absolute/path/to/surmem
+# or one-shot:
+pi -e /absolute/path/to/surmem/extensions/surmem/index.ts
 ```
 
-Or register it globally so it auto-loads in every pi session — add the absolute
-path to the `extensions` list in `~/.pi/agent/settings.json`:
+The package is ready for npm publication as `pi-surmem`; after publication it can be installed with `pi install npm:pi-surmem`.
+
+## Zero-config behavior
+
+No qmd, API key, paid inference, or native SQLite addon is required. On first use SurMem automatically downloads two GGUF files into qmd's shared model cache:
+
+- `EmbeddingGemma-300M-Q8_0` (about 334 MB, 768 dimensions) for semantic vectors.
+- `Qwen3-4B-Q4_K_M` (about 2.5 GB) for durable-memory judgment and contradiction arbitration.
+
+Each model runs in a private loopback daemon. All Pi processes share the same embedding PID and the same judgment PID; opening more sessions does not load duplicate model instances. Daemons use bearer-token authentication, private state files, progress reporting, crash-safe startup locks, proxy-aware downloads, and a 30-minute idle timeout.
+
+Built-in SQLite provides WAL-backed storage and FTS5 session search. Durable memories are split into global and current-project stores. Candidate memories remain transient until the main agent confirms them with `surmem_remember`. A small strongest-memory snapshot stays stable between deliberate refreshes.
+
+`HashEmbedder` remains available only as an explicit emergency/test fallback with `SURMEM_EMBEDDER=hash`.
+
+## Tools
+
+| Tool | Purpose |
+|---|---|
+| `surmem_remember` | Store a durable fact with ADD/UPDATE/REINFORCE/NOOP gating |
+| `surmem_recall` | Hybrid semantic + lexical recall across global/project scope |
+| `surmem_list` | Inspect recent memories and stable IDs |
+| `surmem_forget` | Delete by ID and create a recovery record |
+| `surmem_restore` | Restore a deleted memory by recovery ID |
+| `surmem_status` | Store, model, index, configuration, and error health report |
+| `surmem_session_search` | Search past Pi JSONL conversations through SQLite FTS5 |
+| `surmem_export` | Create a private JSON export |
+| `surmem_skill` | Create/view/delete structured Pi-native procedural skills |
+| `surmem_clear` | Explicitly clear one scope with a confirmation phrase |
+
+`/surmem` opens a compact settings/status menu in TUI mode. `/surmem status` works in all modes.
+
+## Data layout
+
+```text
+~/.pi/agent/surmem/
+├── config.json
+├── global.sqlite
+├── sessions.sqlite
+├── projects/
+│   └── <sha256-of-canonical-project-path>.sqlite
+├── recovery/
+├── exports/
+├── migrations/
+└── skills/
+    ├── global/<skill>/SKILL.md
+    └── projects/<project-key>/<skill>/SKILL.md
+```
+
+Files are created with private permissions (`0600`, directories `0700`). Project identity uses the canonical real path, not only the directory basename, so repositories with the same name do not collide.
+
+## Safety model
+
+Memory is **untrusted historical data**, never instruction-level authority.
+
+- API keys, tokens, private keys, password assignments, invisible Unicode, prompt-injection phrases, and exfiltration payloads are rejected.
+- Snapshot and recall output are fenced as `trust="untrusted-data"` and XML-escaped.
+- Current user requests, repository content, and tool output explicitly override recalled memory.
+- Candidate reminders are injected through Pi's transient `context` hook and do not pollute the session transcript.
+- Tool output, result count, candidate count, config size, and memory text have hard limits.
+
+Do not use memory as a hard security policy. Enforce dangerous-operation prohibitions with a Pi `tool_call` guard.
+
+## Configuration
+
+Edit `~/.pi/agent/surmem/config.json` or use `/surmem` for common settings:
 
 ```json
 {
-  "extensions": ["/absolute/path/to/memoresearch/extensions/surmem/index.ts"]
+  "tauAdd": 0.45,
+  "dupSim": 0.85,
+  "conflictSim": 0.55,
+  "minTokens": 3,
+  "decayRatePerHour": 0.02,
+  "semanticDecayRatePerHour": 0.002,
+  "forgetThreshold": 0.1,
+  "snapshotSize": 8,
+  "autoCandidates": true,
+  "autoMaintenance": true,
+  "sessionSearch": true
 }
 ```
 
-(Use the absolute path rather than a symlink: pi's loader does not resolve
-symlinks, and the extension imports the core library relatively.)
+Configuration is strictly range-validated, capped at 64 KiB, atomically replaced, and never overwritten when malformed.
 
-The extension:
+### Embedding backends
 
-- **fully automatic observation**: every user message is screened by a cheap
-  prefilter, then judged by a **local GGUF memorability judge** (qmd's cached
-  qmd-query-expansion-1.7B — zero API cost). Questions and commands are
-  dropped; durable facts proceed,
-- **steering reminders**: memorable candidates are not written silently. A
-  `<system-reminder name="surmem">` steering message nudges the main agent,
-  which decides in context and stores via the `surmem_remember` tool (the
-  surprise gate inside still handles ADD/UPDATE/REINFORCE dedup),
-- injects a KV-cache-stable snapshot of your strongest memories into the system
-  prompt (checkpoint-refreshed, following pi-memory's approach),
-- gives the agent `surmem_remember` and `surmem_recall` tools,
-- adds a single `/surmem` command opening a settings-style panel (status +
-  live-tunable parameters),
-- consolidates (episodic -> semantic, idempotent + deduplicated) and persists
-  memory on session shutdown.
-
-### Extension commands
-
-```
-/surmem     # settings panel: status (memory counts, embedder, judge, config
-            # path) on top; parameters below. up/down to select, enter to edit,
-            # enter to save, esc to close.
-            # Saved to ~/.pi/agent/surmem.json (global) and applied live.
-```
-
-Tunable parameters: `tauAdd`, `dupSim`, `conflictSim`, `minTokens`,
-`decayRatePerHour`, `semanticDecayRatePerHour`, `forgetThreshold`,
-`snapshotSize`.
-
-### Extension environment variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `SURMEM_GGUF_MODEL_PATH` | qmd-cached embeddinggemma if present | Local GGUF embedding model (highest precedence) |
-| `SURMEM_GGUF_DIM` | `768` | Embedding dim (`1024` for Qwen3-Embedding-0.6B) |
-| `SURMEM_JUDGE_GGUF` | qmd-cached qmd-query-expansion-1.7B if present | Local GGUF memorability judge |
-| `SURMEM_GGUF_GPU` | unset (CPU) | llama.cpp GPU backend: `auto`, `cuda`, `metal`, `vulkan`. CPU is the default so the embedder and judge never fight over VRAM |
-| `SURMEM_EMBEDDING_API_KEY` | unset | OpenAI-compatible embedder (used when no GGUF model) |
-| `SURMEM_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | Endpoint override |
-| `SURMEM_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
-| `SURMEM_EMBEDDING_DIM` | `1536` | Endpoint model dim |
-| `SURMEM_STORE_PATH` | `<cwd>/.pi/surmem/memory.json` | Memory store location (per-project) |
-| `SURMEM_CONFIG_PATH` | `~/.pi/agent/surmem.json` | Config file location (global) |
-
-## Tests
+**Default shared embedding daemon**:
 
 ```bash
-bun test                              # unit tests (no network, deterministic)
-bun x tsc --noEmit                    # core typecheck
-bun x tsc -p extensions/surmem        # extension typecheck (against real pi types)
-bun run scripts/gguf-smoke.ts         # local-model smoke test (needs the GGUF file)
+# Defaults shown; no configuration is required.
+export SURMEM_GGUF_MODEL_URI='hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf'
+export SURMEM_GGUF_DIM=768
+# optional: auto, cuda, metal, vulkan; CPU is default
+export SURMEM_GGUF_GPU=auto
 ```
 
-## Roadmap
+Use `SURMEM_GGUF_MODEL_PATH` to supply an already-downloaded model. Use `SURMEM_EMBEDDER=hash` only to explicitly disable neural embeddings.
 
-- Vector-index acceleration (sqlite-vec) for >10⁴ memories
-- Procedural memory (skill consolidation from successful trajectories)
-- RL-trained write policy to replace the heuristic surprise gate
-  (decision logs already carry the audit fields needed for training data)
-- Benchmark evaluation on LoCoMo / LongMemEval
+**OpenAI-compatible endpoint**:
+
+```bash
+export SURMEM_EMBEDDING_API_KEY=...
+export SURMEM_EMBEDDING_BASE_URL=https://api.openai.com/v1
+export SURMEM_EMBEDDING_MODEL=text-embedding-3-small
+export SURMEM_EMBEDDING_DIM=1536
+```
+
+**Default shared judgment + arbitration daemon**:
+
+```bash
+# One Qwen model serves both roles; no remote tokens are consumed.
+export SURMEM_JUDGE_GGUF_URI='hf:ggml-org/Qwen3-4B-GGUF:Q4_K_M'
+# Optional local file override:
+export SURMEM_JUDGE_GGUF=/models/Qwen3-4B-Q4_K_M.gguf
+export SURMEM_JUDGE_GGUF_GPU=auto
+```
+
+For constrained machines, explicitly use heuristic mode:
+
+```bash
+export SURMEM_JUDGE_MODE=heuristic
+```
+
+An OpenAI-compatible judge remains an opt-in override:
+
+```bash
+export SURMEM_JUDGE_API_KEY=...
+export SURMEM_JUDGE_MODEL=gpt-4o-mini
+export SURMEM_JUDGE_BASE_URL=https://api.openai.com/v1
+```
+
+**Optional separate contradiction arbiter override**:
+
+```bash
+export SURMEM_ARBITER_API_KEY=...
+export SURMEM_ARBITER_MODEL=gpt-4o-mini
+export SURMEM_ARBITER_BASE_URL=https://api.openai.com/v1
+```
+
+Other paths:
+
+| Variable | Default |
+|---|---|
+| `SURMEM_DIR` | `~/.pi/agent/surmem` |
+| `SURMEM_CONFIG_PATH` | `<SURMEM_DIR>/config.json` |
+| `SURMEM_STORE_PATH` | Only used as a legacy JSON migration source |
+| `SURMEM_HTTP_TIMEOUT_MS` | `30000` |
+| `SURMEM_GGUF_DAEMON_IDLE_MS` | `1800000` (30 minutes) |
+| `SURMEM_JUDGE_DAEMON_IDLE_MS` | `1800000` (30 minutes) |
+| `SURMEM_DAEMON_MODEL_DIR` | `~/.cache/qmd/models` |
+| `SURMEM_JUDGE_MODE` | local shared GGUF; set `heuristic` only to disable it |
+
+Live model state and download progress:
+
+```bash
+cat ~/.pi/agent/surmem/embedding-daemon/state.json
+cat ~/.pi/agent/surmem/judgment-daemon/state.json
+```
+
+## Migration from SurMem 0.1
+
+On first startup, the extension automatically imports:
+
+- project JSON memory from `<cwd>/.pi/surmem/memory.json` (or `SURMEM_STORE_PATH`),
+- global config from `~/.pi/agent/surmem.json`.
+
+The old files are preserved. A migration report is written under `~/.pi/agent/surmem/migrations/`. Unsafe legacy records are skipped and listed in that report rather than injected.
+
+Core `JsonPersister` also reads the old top-level array format. `SqlitePersister` migrates the original column-based `memories` table and re-embeds records when the embedding fingerprint differs.
+
+## Core library
+
+```ts
+import { SqlitePersister, SurpriseMemory } from "pi-surmem";
+
+const memory = new SurpriseMemory({
+  store: { persister: new SqlitePersister("./memory.sqlite") },
+});
+
+await memory.load();
+await memory.observe("The project uses pnpm workspaces.", {
+  scope: "project",
+  project: "example",
+});
+
+const hits = await memory.recall("package manager", 5);
+console.log(hits);
+await memory.close();
+```
+
+The core supports custom embedders, query/document asymmetric embeddings, LLM conflict judges, consolidation summarizers, custom persisters, explicit reindex, export, restore, and health reporting.
+
+## Reliability and operations
+
+- Writes auto-save immediately after mutation; shutdown is not the only durability boundary.
+- JSON uses lock files, optimistic revisions, merge-on-conflict, atomic rename, and deletion tombstones.
+- SQLite uses WAL, `BEGIN IMMEDIATE`, revision checks, upserts, and tombstones.
+- Corrupt/unreadable stores produce explicit path-bearing errors and are preserved; they are never silently replaced with an empty store.
+- SQLite handles are checkpointed and closed on session replacement, reload, and shutdown.
+- Embedding/judge async results carry session-generation guards so stale work cannot leak into a replacement session.
+
+For backup, stop Pi (or allow graceful shutdown) and copy `~/.pi/agent/surmem/`. JSON exports created by `surmem_export` are portable and do not depend on SQLite.
+
+## Architecture
+
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for subsystem boundaries, persistence invariants, retrieval scoring, security rules, and Pi lifecycle design. Contributors and coding agents should also follow [`AGENTS.md`](./AGENTS.md).
+
+## Development and verification
+
+```bash
+bun install
+bun run check       # core + extension typecheck, Biome, all tests
+bun run pack:check  # verify published file set
+bun run demo
+```
+
+Current deterministic suite: **38 tests, 115 assertions**, including concurrent writers, deletion non-resurrection, corruption behavior, legacy migrations, embedding reindex, safety fencing, extension lifecycle, FTS5, CJK fallback, and package integration.
+
+Optional real-model smoke test:
+
+```bash
+SURMEM_GGUF_MODEL_PATH=/models/embeddinggemma.gguf bun run smoke:gguf
+```
+
+## Honest limits
+
+- Hash embeddings are lexical approximations. Use a real embedding model for strong paraphrase recall.
+- Similarity alone cannot prove contradiction; without an arbiter SurMem preserves related facts instead of destructively updating them.
+- Brute-force in-memory vector scoring is designed for tens of thousands of curated memories, not millions.
+- Session search indexes text messages, not tool-result payloads, to avoid persisting large or sensitive command output.
+- Automatic candidates intentionally require agent confirmation; this trades maximum automation for lower memory pollution.
 
 ## License
 

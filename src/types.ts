@@ -1,16 +1,20 @@
-/** Data structures: memory records and write-gate verdicts. */
+/** Data structures: memory records, scopes, and write-gate verdicts. */
+
+import { randomUUID } from "node:crypto";
 
 export enum Kind {
-  EPISODIC = "episodic", // raw events, subject to decay
-  SEMANTIC = "semantic", // consolidated facts, stable and long-lived
-  PROCEDURAL = "procedural", // skills / workflows (reserved)
+  EPISODIC = "episodic",
+  SEMANTIC = "semantic",
+  PROCEDURAL = "procedural",
 }
 
+export type MemoryScope = "global" | "project";
+
 export enum WriteVerdict {
-  ADD = "ADD", // high surprise: store as new memory
-  UPDATE = "UPDATE", // conflicts with an existing memory: supersede it
-  REINFORCE = "REINFORCE", // repeated content: strengthen existing memory
-  NOOP = "NOOP", // low-value routine: discard
+  ADD = "ADD",
+  UPDATE = "UPDATE",
+  REINFORCE = "REINFORCE",
+  NOOP = "NOOP",
 }
 
 export interface MemoryRecord {
@@ -18,26 +22,37 @@ export interface MemoryRecord {
   text: string;
   vector: number[];
   kind: Kind;
-  createdAt: number; // epoch seconds
-  lastAccessed: number; // epoch seconds
-  baseStrength: number; // initial strength, driven by surprise at write
-  accessCount: number; // retrieval/reinforcement hits (spacing effect)
-  surpriseAtWrite: number; // surprise score when written (for auditing)
-  supersededBy: string | null; // id of the UPDATE memory that replaced this one
-  sourceIds: string[]; // episodic sources of a semantic memory
+  createdAt: number;
+  updatedAt: number;
+  lastAccessed: number;
+  baseStrength: number;
+  accessCount: number;
+  surpriseAtWrite: number;
+  supersededBy: string | null;
+  sourceIds: string[];
   metadata: Record<string, unknown>;
+}
+
+export interface MemoryTombstone {
+  id: string;
+  deletedAt: number;
+}
+
+export function nowSeconds(): number {
+  return Date.now() / 1000;
 }
 
 export function createRecord(
   partial: Pick<MemoryRecord, "text" | "vector"> & Partial<MemoryRecord>,
 ): MemoryRecord {
-  const now = Date.now() / 1000;
+  const now = nowSeconds();
   return {
-    id: crypto.randomUUID().slice(0, 12),
+    id: randomUUID(),
     kind: Kind.EPISODIC,
     createdAt: now,
+    updatedAt: now,
     lastAccessed: now,
-    baseStrength: 1.0,
+    baseStrength: 1,
     accessCount: 0,
     surpriseAtWrite: 0,
     supersededBy: null,
@@ -47,7 +62,10 @@ export function createRecord(
   };
 }
 
-export function touch(rec: MemoryRecord): void {
-  rec.lastAccessed = Date.now() / 1000;
+export function touch(rec: MemoryRecord, strengthDelta = 0): void {
+  const now = nowSeconds();
+  rec.lastAccessed = now;
+  rec.updatedAt = now;
   rec.accessCount += 1;
+  rec.baseStrength += strengthDelta;
 }
