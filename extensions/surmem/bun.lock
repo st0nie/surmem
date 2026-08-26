@@ -6,6 +6,7 @@
       "name": "pi-surmem",
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "*",
+        "@earendil-works/pi-tui": "^0.84.3",
         "@types/bun": "^1.4.0",
         "typebox": "*",
       },

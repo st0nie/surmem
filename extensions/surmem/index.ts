@@ -34,9 +34,17 @@
  *   SURMEM_CONFIG_PATH         - default ~/.pi/agent/surmem.json
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import {
+  Container,
+  Key,
+  matchesKey,
+  SettingsList,
+  Spacer,
+  Text,
+  type SettingItem,
+} from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -83,88 +91,6 @@ const CONFIG_ROWS: ConfigRow[] = [
   { key: "forgetThreshold", desc: "strength below this -> forgotten" },
   { key: "snapshotSize", desc: "memories injected into system prompt" },
 ];
-
-/** Settings-style panel for the /surmem command (status + editable config). */
-class SurmemConfigPanel {
-  private selected = 0;
-  private editing = false;
-  private buffer = "";
-  private message = "";
-
-  constructor(
-    private tui: { requestRender(): void },
-    private getStatus: () => string[],
-    private getValues: () => Record<string, number>,
-    private onCommit: (key: keyof ExtConfig, value: number) => void,
-    private done: () => void,
-  ) {}
-
-  handleInput(data: string): void {
-    if (this.editing) {
-      if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-        const value = Number(this.buffer);
-        const key = CONFIG_ROWS[this.selected].key;
-        if (this.buffer.trim() !== "" && Number.isFinite(value)) {
-          this.onCommit(key, value);
-          this.message = `saved: ${key} = ${value}`;
-        } else {
-          this.message = `invalid number: "${this.buffer}"`;
-        }
-        this.editing = false;
-        this.buffer = "";
-      } else if (matchesKey(data, "escape")) {
-        this.editing = false;
-        this.buffer = "";
-      } else if (matchesKey(data, "backspace")) {
-        this.buffer = this.buffer.slice(0, -1);
-      } else if (/^[0-9.eE+-]$/.test(data)) {
-        this.buffer += data;
-      }
-      this.tui.requestRender();
-      return;
-    }
-    if (matchesKey(data, "up")) {
-      this.selected = (this.selected - 1 + CONFIG_ROWS.length) % CONFIG_ROWS.length;
-    } else if (matchesKey(data, "down")) {
-      this.selected = (this.selected + 1) % CONFIG_ROWS.length;
-    } else if (matchesKey(data, "enter") || matchesKey(data, "return")) {
-      this.editing = true;
-      this.buffer = String(this.getValues()[CONFIG_ROWS[this.selected].key] ?? "");
-      this.message = "";
-    } else if (matchesKey(data, "escape") || data === "q") {
-      this.done();
-      return;
-    }
-    this.tui.requestRender();
-  }
-
-  render(width: number): string[] {
-    const lines = ["SurMem", ""];
-    for (const s of this.getStatus()) lines.push(`  ${s}`);
-    lines.push("", "  Parameters", "");
-    const values = this.getValues();
-    CONFIG_ROWS.forEach((row, i) => {
-      const cursor = i === this.selected ? ">" : " ";
-      const value =
-        this.editing && i === this.selected
-          ? this.buffer + "_"
-          : String(values[row.key]);
-      lines.push(
-        `${cursor} ${row.key.padEnd(26)} ${value.padEnd(12)} ${row.desc}`.slice(0, width),
-      );
-    });
-    lines.push("");
-    lines.push(
-      this.editing
-        ? "editing — type value, enter=save, esc=cancel"
-        : "up/down=select  enter=edit  esc/q=close",
-    );
-    if (this.message) lines.push(this.message);
-    return lines;
-  }
-
-  invalidate(): void {}
-}
 
 interface EmbedderPair {
   embedder: Embedder;
@@ -443,51 +369,112 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("SurMem not initialized", "warning");
         return;
       }
-      const getStatus = (): string[] => {
-        const all = mem!.store.active();
-        const episodic = all.filter((m) => m.kind === "episodic").length;
-        const semantic = all.filter((m) => m.kind === "semantic").length;
-        return [
-          `memories: ${all.length} (${episodic} episodic, ${semantic} semantic)`,
-          `embedder: ${embedderName}`,
-          `judge:    ${judgeName}`,
-          `config:   ${configPath}`,
-        ];
-      };
-      const currentValues = (): Record<string, number> => {
-        const c = mem!.config;
-        return {
-          tauAdd: c.gate.tauAdd,
-          dupSim: c.gate.dupSim,
-          conflictSim: c.gate.conflictSim,
-          minTokens: c.gate.minTokens,
-          decayRatePerHour: c.store.decayRatePerHour,
-          semanticDecayRatePerHour: c.store.semanticDecayRatePerHour,
-          forgetThreshold: c.store.forgetThreshold,
-          snapshotSize,
-        };
-      };
-      const commit = (key: keyof ExtConfig, value: number): void => {
-        const cfg = { ...loadConfig(), [key]: value };
-        persistConfig(cfg);
-        applyConfig(cfg);
-        snapshot = buildSnapshot(); // snapshotSize may have changed
-      };
-      if (!ctx.hasUI) {
-        const lines = [
-          ...getStatus(),
-          ...Object.entries(currentValues()).map(([k, v]) => `${k} = ${v}`),
-        ];
-        ctx.ui.notify(lines.join("\n"), "info");
-        return;
-      }
-      await ctx.ui.custom<void>(
-        (tui, _theme, _kb, done) =>
-          new SurmemConfigPanel(tui, getStatus, currentValues, commit, () => done()),
-        { overlay: true },
-      );
+      await showSurmemSettings(ctx);
     },
   });
+
+  /** Settings UI: pi-tui's SettingsList (same component as pi's /settings).
+   *  Enter on a row closes the overlay and opens pi's native input dialog;
+   *  valid input is applied live, persisted, then the panel reopens. */
+  async function showSurmemSettings(ctx: ExtensionCommandContext): Promise<void> {
+    if (!mem) return;
+
+    const all = mem.store.active();
+    const statusLines = [
+      `memories: ${all.length} (${all.filter((m) => m.kind === "episodic").length} episodic, ${all.filter((m) => m.kind === "semantic").length} semantic)`,
+      `embedder: ${embedderName}`,
+      `judge:    ${judgeName}`,
+      `config:   ${configPath}`,
+    ];
+
+    const currentValues = (): Record<string, number> => {
+      const c = mem!.config;
+      return {
+        tauAdd: c.gate.tauAdd,
+        dupSim: c.gate.dupSim,
+        conflictSim: c.gate.conflictSim,
+        minTokens: c.gate.minTokens,
+        decayRatePerHour: c.store.decayRatePerHour,
+        semanticDecayRatePerHour: c.store.semanticDecayRatePerHour,
+        forgetThreshold: c.store.forgetThreshold,
+        snapshotSize,
+      };
+    };
+
+    const commit = (key: keyof ExtConfig, value: number): void => {
+      const cfg = { ...loadConfig(), [key]: value };
+      persistConfig(cfg);
+      applyConfig(cfg);
+      snapshot = buildSnapshot(); // snapshotSize may have changed
+    };
+
+    const values = currentValues();
+    const items: SettingItem[] = CONFIG_ROWS.map((row) => ({
+      id: row.key,
+      label: row.key,
+      description: row.desc,
+      currentValue: String(values[row.key]),
+    }));
+
+    let list: SettingsList | null = null;
+    let currentIndex = 0;
+
+    const picked = await ctx.ui.custom<string | undefined>(
+      (_tui, _theme, _kb, done) => {
+        const container = new Container();
+        container.addChild(new Text("SurMem", 0, 0));
+        container.addChild(new Spacer(1));
+        for (const line of statusLines) container.addChild(new Text(line, 0, 0));
+        container.addChild(new Spacer(1));
+
+        list = new SettingsList(
+          items,
+          items.length + 2,
+          getSettingsListTheme(),
+          () => {}, // values edited via the input dialog below, not inline
+          () => done(undefined),
+        );
+        container.addChild(list);
+
+        return {
+          render: (w: number) => container.render(w),
+          invalidate: () => container.invalidate(),
+          handleInput: (data: string) => {
+            if (matchesKey(data, "up")) currentIndex = Math.max(0, currentIndex - 1);
+            else if (matchesKey(data, "down")) currentIndex = Math.min(items.length - 1, currentIndex + 1);
+            if (matchesKey(data, Key.enter)) {
+              done(items[currentIndex].id);
+              return;
+            }
+            list?.handleInput?.(data);
+          },
+        };
+      },
+      { overlay: true },
+    );
+
+    if (!picked) return;
+
+    const row = CONFIG_ROWS.find((r) => r.key === picked);
+    const current = String(values[picked as keyof ExtConfig]);
+
+    // Re-prompt on invalid input with the last entry, Esc cancels.
+    let input: string | undefined = await ctx.ui.input(
+      `${picked} — ${row?.desc ?? ""}`,
+      current,
+    );
+    while (input != null) {
+      const trimmed = input.trim();
+      const n = Number(trimmed);
+      if (trimmed !== "" && Number.isFinite(n)) {
+        commit(picked as keyof ExtConfig, n);
+        ctx.ui.notify(`SurMem: ${picked} = ${n} (saved to ${configPath})`, "info");
+        await showSurmemSettings(ctx);
+        return;
+      }
+      input = await ctx.ui.input(`${picked} (number required)`, trimmed);
+    }
+  }
 
   pi.on("session_shutdown", async () => {
     try {
