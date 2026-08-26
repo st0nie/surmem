@@ -1,0 +1,6 @@
+node_modules/
+*.sqlite
+*.sqlite-journal
+memory.json
+.pi/surmem/
+.DS_Store

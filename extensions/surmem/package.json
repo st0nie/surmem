@@ -1,0 +1,14 @@
+{
+  "name": "pi-surmem",
+  "version": "0.1.0",
+  "description": "Surprise-gated long-term memory extension for the pi coding agent",
+  "type": "module",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/bun": "^1.4.0",
+    "typebox": "*"
+  }
+}

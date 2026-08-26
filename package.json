@@ -1,0 +1,16 @@
+{
+  "name": "surmem",
+  "version": "0.1.0",
+  "description": "Surprise-gated, agent-agnostic memory framework",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "demo": "bun run demo.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0"
+  },
+  "dependencies": {
+    "node-llama-cpp": "^3.20.0"
+  }
+}
