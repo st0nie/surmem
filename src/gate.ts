@@ -48,13 +48,13 @@ export interface GateDecision {
 }
 
 export class SurpriseGate {
-  private readonly tauAdd: number;
-  private readonly dupSim: number;
-  private readonly conflictSim: number;
-  private readonly minTokens: number;
-  private readonly momentumDecay: number;
-  private readonly momentumWindowS: number;
-  private readonly judge?: LLMJudge;
+  private tauAdd: number;
+  private dupSim: number;
+  private conflictSim: number;
+  private minTokens: number;
+  private momentumDecay: number;
+  private momentumWindowS: number;
+  private judge?: LLMJudge;
   private noveltyWindow: Array<{ ts: number; novelty: number }> = [];
 
   constructor(opts: GateOptions = {}) {
@@ -65,6 +65,30 @@ export class SurpriseGate {
     this.momentumDecay = opts.momentumDecay ?? 0.8;
     this.momentumWindowS = opts.momentumWindowS ?? 300;
     this.judge = opts.judge;
+  }
+
+  /** Current gate configuration. */
+  get config(): Required<Omit<GateOptions, "judge" | "momentumDecay" | "momentumWindowS">> &
+    Pick<GateOptions, "momentumDecay" | "momentumWindowS"> {
+    return {
+      tauAdd: this.tauAdd,
+      dupSim: this.dupSim,
+      conflictSim: this.conflictSim,
+      minTokens: this.minTokens,
+      momentumDecay: this.momentumDecay,
+      momentumWindowS: this.momentumWindowS,
+    };
+  }
+
+  /** Update thresholds at runtime (e.g. from a config command). */
+  configure(opts: Partial<GateOptions>): void {
+    if (opts.tauAdd !== undefined) this.tauAdd = opts.tauAdd;
+    if (opts.dupSim !== undefined) this.dupSim = opts.dupSim;
+    if (opts.conflictSim !== undefined) this.conflictSim = opts.conflictSim;
+    if (opts.minTokens !== undefined) this.minTokens = opts.minTokens;
+    if (opts.momentumDecay !== undefined) this.momentumDecay = opts.momentumDecay;
+    if (opts.momentumWindowS !== undefined) this.momentumWindowS = opts.momentumWindowS;
+    if (opts.judge !== undefined) this.judge = opts.judge;
   }
 
   /** Titans-style momentum: surprise now + decayed surprise of recent past. */

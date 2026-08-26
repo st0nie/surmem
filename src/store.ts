@@ -23,9 +23,9 @@ export interface StoreOptions {
 
 export class MemoryStore {
   private records = new Map<string, MemoryRecord>();
-  private readonly decayRate: number;
-  private readonly semanticDecayRate: number;
-  private readonly forgetThreshold: number;
+  private decayRate: number;
+  private semanticDecayRate: number;
+  private forgetThreshold: number;
   private readonly persister?: Persister;
 
   constructor(opts: StoreOptions = {}) {
@@ -34,6 +34,24 @@ export class MemoryStore {
     this.forgetThreshold = opts.forgetThreshold ?? 0.1;
     this.persister =
       opts.persister ?? (opts.persistPath ? new JsonPersister(opts.persistPath) : undefined);
+  }
+
+  /** Current store configuration. */
+  get config() {
+    return {
+      decayRatePerHour: this.decayRate,
+      semanticDecayRatePerHour: this.semanticDecayRate,
+      forgetThreshold: this.forgetThreshold,
+    };
+  }
+
+  /** Update decay/forget parameters at runtime. */
+  configure(
+    opts: Partial<Pick<StoreOptions, "decayRatePerHour" | "semanticDecayRatePerHour" | "forgetThreshold">>,
+  ): void {
+    if (opts.decayRatePerHour !== undefined) this.decayRate = opts.decayRatePerHour;
+    if (opts.semanticDecayRatePerHour !== undefined) this.semanticDecayRate = opts.semanticDecayRatePerHour;
+    if (opts.forgetThreshold !== undefined) this.forgetThreshold = opts.forgetThreshold;
   }
 
   add(rec: MemoryRecord): void {

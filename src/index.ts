@@ -135,6 +135,20 @@ export class SurpriseMemory {
     return "## Relevant memories\n" + lines.join("\n");
   }
 
+  /** Update gate/store parameters at runtime. */
+  configure(opts: {
+    gate?: Partial<GateOptions>;
+    store?: Partial<Pick<StoreOptions, "decayRatePerHour" | "semanticDecayRatePerHour" | "forgetThreshold">>;
+  }): void {
+    if (opts.gate) this.gate.configure(opts.gate);
+    if (opts.store) this.store.configure(opts.store);
+  }
+
+  /** Current configuration of the gate and store. */
+  get config() {
+    return { gate: this.gate.config, store: this.store.config };
+  }
+
   /** Consolidate episodic clusters into semantic memories. */
   async reflect(): Promise<ConsolidationResult> {
     return this.consolidator.consolidate();
@@ -158,7 +172,8 @@ export type { Summarizer } from "./consolidation";
 export type { ScoredMemory } from "./retrieval";
 export { HashEmbedder, OpenAIEmbedder, cosine } from "./embeddings";
 export type { Embedder } from "./embeddings";
-export { OpenAIJudge, OpenAISummarizer } from "./judge";
+export { OpenAIJudge, OpenAISummarizer, OpenAIMemorabilityJudge, GgufMemorabilityJudge } from "./judge";
+export type { MemorabilityJudge } from "./judge";
 export { JsonPersister, SqlitePersister } from "./persistence";
 export type { Persister } from "./persistence";
 export { GgufEmbedder } from "./local-embedder";

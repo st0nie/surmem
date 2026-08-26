@@ -23,6 +23,7 @@ export interface Summarizer {
 export interface ConsolidationOptions {
   clusterSim?: number; // similarity to join a cluster (default 0.6)
   minClusterSize?: number; // minimum cluster size to consolidate (default 2)
+  dedupSim?: number; // similarity above which a new semantic reinforces an existing one (default 0.85)
   summarizer?: Summarizer;
 }
 
@@ -34,6 +35,7 @@ export interface ConsolidationResult {
 export class Consolidator {
   private readonly clusterSim: number;
   private readonly minClusterSize: number;
+  private readonly dedupSim: number;
   private readonly summarizer?: Summarizer;
 
   constructor(
@@ -43,11 +45,15 @@ export class Consolidator {
   ) {
     this.clusterSim = opts.clusterSim ?? 0.6;
     this.minClusterSize = opts.minClusterSize ?? 2;
+    this.dedupSim = opts.dedupSim ?? 0.85;
     this.summarizer = opts.summarizer;
   }
 
   async consolidate(): Promise<ConsolidationResult> {
-    const episodic = this.store.byKind(Kind.EPISODIC);
+    // Skip episodic memories that were already consolidated (idempotence).
+    const episodic = this.store
+      .byKind(Kind.EPISODIC)
+      .filter((m) => m.metadata.consolidatedInto === undefined);
     const visited = new Set<string>();
     const clusters: MemoryRecord[][] = [];
 
@@ -77,6 +83,24 @@ export class Consolidator {
           ).text;
 
       const [vector] = await this.embedder.embed([text]);
+
+      // Dedup against existing semantic memories: near-duplicate consolidations
+      // reinforce the existing record instead of creating a copy.
+      const existingSemantic = this.store.byKind(Kind.SEMANTIC);
+      const nearest = existingSemantic.length
+        ? existingSemantic.reduce((best, m) =>
+            cosine(vector, m.vector) > cosine(vector, best.vector) ? m : best,
+          )
+        : null;
+
+      if (nearest && cosine(vector, nearest.vector) >= this.dedupSim) {
+        nearest.baseStrength += 0.3;
+        nearest.accessCount += 1;
+        nearest.lastAccessed = Date.now() / 1000;
+        for (const src of cluster) src.metadata.consolidatedInto = nearest.id;
+        continue;
+      }
+
       const maxStrength = Math.max(...cluster.map((m) => m.baseStrength));
       const rec = createRecord({
         text,
@@ -90,6 +114,7 @@ export class Consolidator {
         metadata: { consolidatedFrom: cluster.length },
       });
       this.store.add(rec);
+      for (const src of cluster) src.metadata.consolidatedInto = rec.id;
       created.push(rec);
     }
 

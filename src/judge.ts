@@ -11,6 +11,15 @@
 import type { LLMJudge } from "./gate";
 import type { Summarizer } from "./consolidation";
 
+/**
+ * Memorability judge: decides whether a raw conversation message contains a
+ * fact worth long-term memory, and distills it into one self-contained
+ * sentence. Returns null when the message is a question, command, or chatter.
+ */
+export interface MemorabilityJudge {
+  assess(text: string): Promise<string | null>;
+}
+
 export interface OpenAIChatOptions {
   apiKey: string;
   model: string; // e.g. "gpt-4o-mini"
@@ -80,5 +89,105 @@ export class OpenAISummarizer implements Summarizer {
 
 ${list}`,
     );
+  }
+}
+
+/** Chat-completion-backed memorability judge. */
+export class OpenAIMemorabilityJudge implements MemorabilityJudge {
+  constructor(private opts: OpenAIChatOptions) {}
+
+  async assess(text: string): Promise<string | null> {
+    const answer = await chat(this.opts, memorabilityPrompt(text));
+    if (!answer || answer.toUpperCase().startsWith("NONE")) return null;
+    return answer;
+  }
+}
+
+/** Shared prompt for memorability assessment. */
+export function memorabilityPrompt(text: string): string {
+  return `You are the memory gate of an AI agent. Decide whether the following message contains a durable fact, preference, or decision worth long-term memory.
+
+Message: """${text}"""
+
+Rules:
+- Questions, commands, requests, greetings, and task instructions are NOT memories.
+- Facts about the user, stable preferences, project decisions, and hard-won lessons ARE memories.
+- If it is a memory, rewrite it as ONE self-contained sentence (third person, no pronouns without referents).
+- If it is not a memory, reply with exactly: NONE
+
+Reply with the single sentence or NONE. Nothing else.`;
+}
+
+export interface GgufJudgeOptions {
+  /** Absolute path to a generative GGUF model (e.g. qmd's cached query-expansion model). */
+  modelPath: string;
+  /** GPU backend for llama.cpp. Defaults to SURMEM_GGUF_GPU env, else false (CPU). */
+  gpu?: "auto" | "metal" | "cuda" | "vulkan" | false;
+}
+
+interface LlamaChatSessionLike {
+  prompt(text: string): Promise<string>;
+  setChatHistory?(history: unknown[]): void;
+  dispose?(): Promise<void> | void;
+}
+
+interface LlamaContextLike {
+  getSequence(): unknown;
+  dispose?(): Promise<void> | void;
+}
+
+/**
+ * Fully local memorability judge via node-llama-cpp and a small generative
+ * GGUF model. Quality is lower than a frontier model, but it is offline and
+ * free. node-llama-cpp is only imported when this class is instantiated.
+ */
+export class GgufMemorabilityJudge implements MemorabilityJudge {
+  private sessionPromise: Promise<LlamaChatSessionLike> | null = null;
+  private context: LlamaContextLike | null = null;
+
+  constructor(private opts: GgufJudgeOptions) {}
+
+  private async session(): Promise<LlamaChatSessionLike> {
+    if (!this.sessionPromise) {
+      this.sessionPromise = (async () => {
+        const llamaCpp = await import("node-llama-cpp");
+        const llama = await llamaCpp.getLlama({
+          gpu:
+            this.opts.gpu ??
+            (process.env.SURMEM_GGUF_GPU as GgufJudgeOptions["gpu"]) ??
+            false,
+        });
+        const model = await llama.loadModel({ modelPath: this.opts.modelPath });
+        this.context =
+          (await model.createContext()) as unknown as LlamaContextLike;
+        return new llamaCpp.LlamaChatSession({
+          contextSequence: this.context.getSequence() as never,
+        }) as unknown as LlamaChatSessionLike;
+      })();
+    }
+    return this.sessionPromise;
+  }
+
+  async assess(text: string): Promise<string | null> {
+    try {
+      const session = await this.session();
+      // Reset chat history so assessments do not accumulate context.
+      session.setChatHistory?.([]);
+      const answer = (await session.prompt(memorabilityPrompt(text))).trim();
+      if (!answer || answer.toUpperCase().startsWith("NONE")) return null;
+      return answer;
+    } catch {
+      return null; // judge failure must never break the agent loop
+    }
+  }
+
+  async dispose(): Promise<void> {
+    if (this.sessionPromise) {
+      const session = await this.sessionPromise;
+      await session.dispose?.();
+      await this.context?.dispose?.();
+      this.sessionPromise = null;
+      this.context = null;
+    }
   }
 }

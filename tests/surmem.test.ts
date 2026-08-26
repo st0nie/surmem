@@ -148,6 +148,31 @@ describe("consolidation", () => {
     expect(result.created[0].kind).toBe(Kind.SEMANTIC);
     expect(result.created[0].sourceIds.length).toBeGreaterThanOrEqual(2);
   });
+
+  test("reflect() is idempotent: sources are consolidated only once", async () => {
+    const mem = makeMem();
+    await mem.observe("The SurMem framework uses surprise-gated writes.");
+    await mem.observe("The SurMem framework has episodic and semantic layers.");
+    const first = await mem.reflect();
+    expect(first.created.length).toBeGreaterThan(0);
+    const second = await mem.reflect();
+    expect(second.created).toHaveLength(0); // nothing new to consolidate
+    const third = await mem.reflect();
+    expect(third.created).toHaveLength(0);
+  });
+
+  test("near-duplicate consolidations reinforce instead of duplicating", async () => {
+    const mem = makeMem();
+    await mem.observe("The SurMem framework uses surprise-gated writes.");
+    await mem.observe("The SurMem framework has episodic and semantic layers.");
+    await mem.reflect();
+    const semanticCount = mem.store.byKind(Kind.SEMANTIC).length;
+    // Simulate a second consolidation pass over the same material (e.g. after
+    // new related episodes arrived) by un-marking the sources.
+    for (const rec of mem.store.all()) delete rec.metadata.consolidatedInto;
+    await mem.reflect();
+    expect(mem.store.byKind(Kind.SEMANTIC)).toHaveLength(semanticCount);
+  });
 });
 
 describe("persistence", () => {

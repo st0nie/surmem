@@ -23,6 +23,12 @@ export interface GgufEmbedderOptions {
   /** Model output dimension (768 for embeddinggemma-300M, 1024 for Qwen3-0.6B). */
   dim: number;
   /**
+   * GPU backend for llama.cpp. Defaults to SURMEM_GGUF_GPU env, else false
+   * (CPU). Small embedding models are fast enough on CPU, and CPU avoids VRAM
+   * contention when an embedding model and a judge model are both loaded.
+   */
+  gpu?: "auto" | "metal" | "cuda" | "vulkan" | false;
+  /**
    * Prompt template for documents (memories being stored).
    * Must contain "{text}". Default matches embeddinggemma's document format.
    */
@@ -48,6 +54,7 @@ interface SharedState {
 export class GgufEmbedder implements Embedder {
   readonly dim: number;
   private readonly modelPath: string;
+  private readonly gpu: "auto" | "metal" | "cuda" | "vulkan" | false;
   private readonly documentTemplate: string;
   private readonly queryTemplate: string;
   private readonly role: Role;
@@ -56,6 +63,10 @@ export class GgufEmbedder implements Embedder {
   constructor(opts: GgufEmbedderOptions, role: Role = "document", shared?: SharedState) {
     this.modelPath = opts.modelPath;
     this.dim = opts.dim;
+    this.gpu =
+      opts.gpu ??
+      (process.env.SURMEM_GGUF_GPU as GgufEmbedderOptions["gpu"]) ??
+      false;
     this.documentTemplate = opts.documentTemplate ?? "title: none | text: {text}";
     this.queryTemplate = opts.queryTemplate ?? "task: search result | query: {text}";
     this.role = role;
@@ -78,7 +89,7 @@ export class GgufEmbedder implements Embedder {
     if (!this.shared.ctxPromise) {
       this.shared.ctxPromise = (async () => {
         const { getLlama } = await import("node-llama-cpp");
-        const llama = await getLlama();
+        const llama = await getLlama({ gpu: this.gpu });
         const model = await llama.loadModel({ modelPath: this.modelPath });
         return (await model.createEmbeddingContext()) as unknown as LlamaEmbeddingContext;
       })();
