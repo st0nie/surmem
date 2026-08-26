@@ -16,6 +16,9 @@
  * or add the directory to the "extensions" list in settings.json.
  *
  * Configuration (env):
+ *   SURMEM_GGUF_MODEL_PATH     - fully local embeddings via node-llama-cpp
+ *                                (e.g. ~/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf)
+ *   SURMEM_GGUF_DIM            - model output dim (default 768; use 1024 for Qwen3-Embedding-0.6B)
  *   SURMEM_EMBEDDING_API_KEY   - enables the OpenAI-compatible embedder
  *   SURMEM_EMBEDDING_BASE_URL  - default https://api.openai.com/v1
  *   SURMEM_EMBEDDING_MODEL     - default text-embedding-3-small
@@ -32,6 +35,7 @@ import { Type } from "typebox";
 import { join } from "node:path";
 
 import {
+  GgufEmbedder,
   HashEmbedder,
   OpenAIEmbedder,
   SurpriseMemory,
@@ -42,10 +46,28 @@ import {
 const SNAPSHOT_SIZE = 8;
 const OBSERVE_MAX_CHARS = 2000;
 
-function embedderFromEnv(): Embedder {
+interface EmbedderPair {
+  embedder: Embedder;
+  queryEmbedder?: Embedder;
+}
+
+/**
+ * Embedder selection precedence:
+ *   1. SURMEM_GGUF_MODEL_PATH -> fully local GGUF embeddings (qmd-style,
+ *      e.g. ~/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf)
+ *   2. SURMEM_EMBEDDING_API_KEY -> OpenAI-compatible endpoint
+ *   3. HashEmbedder fallback (offline, zero-dependency, lower quality)
+ */
+function embeddersFromEnv(): EmbedderPair {
+  const ggufPath = process.env.SURMEM_GGUF_MODEL_PATH;
+  if (ggufPath) {
+    const dim = Number(process.env.SURMEM_GGUF_DIM ?? 768);
+    const pair = GgufEmbedder.createPair({ modelPath: ggufPath, dim });
+    return { embedder: pair.document, queryEmbedder: pair.query };
+  }
   const apiKey = process.env.SURMEM_EMBEDDING_API_KEY;
   if (apiKey) {
-    return new OpenAIEmbedder({
+    const embedder = new OpenAIEmbedder({
       apiKey,
       baseUrl: process.env.SURMEM_EMBEDDING_BASE_URL,
       model: process.env.SURMEM_EMBEDDING_MODEL,
@@ -53,8 +75,9 @@ function embedderFromEnv(): Embedder {
         ? Number(process.env.SURMEM_EMBEDDING_DIM)
         : undefined,
     });
+    return { embedder };
   }
-  return new HashEmbedder();
+  return { embedder: new HashEmbedder() };
 }
 
 function extractText(content: unknown): string {
@@ -112,8 +135,10 @@ export default function (pi: ExtensionAPI) {
     const persistPath =
       process.env.SURMEM_STORE_PATH ??
       join(ctx.cwd, CONFIG_DIR_NAME, "surmem", "memory.json");
+    const embedders = embeddersFromEnv();
     mem = new SurpriseMemory({
-      embedder: embedderFromEnv(),
+      embedder: embedders.embedder,
+      queryEmbedder: embedders.queryEmbedder,
       gate: { tauAdd: 0.45, dupSim: 0.85, conflictSim: 0.55 },
       consolidation: { clusterSim: 0.3 },
       store: { persistPath },

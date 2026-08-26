@@ -110,10 +110,15 @@ export class OpenAIEmbedder implements Embedder {
   }
 }
 
-/** Cosine similarity assuming both inputs are (approximately) L2-normalized. */
+/** Cosine similarity, robust to unnormalized inputs (e.g. raw GGUF vectors). */
 export function cosine(a: number[], b: number[]): number {
-  let s = 0;
+  let dot = 0, na = 0, nb = 0;
   const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) s += a[i] * b[i];
-  return s;
+  for (let i = 0; i < n; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
 }

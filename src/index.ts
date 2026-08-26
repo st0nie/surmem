@@ -25,6 +25,9 @@ import {
 
 export interface SurMemOptions {
   embedder?: Embedder;
+  /** Optional asymmetric embedder for the read path (e.g. query-prompt format).
+   *  Defaults to `embedder` — correct for symmetric embedding models. */
+  queryEmbedder?: Embedder;
   gate?: GateOptions;
   store?: StoreOptions;
   retrieval?: RetrievalOptions;
@@ -40,6 +43,7 @@ export interface ObserveResult {
 
 export class SurpriseMemory {
   readonly embedder: Embedder;
+  private readonly queryEmbedder: Embedder;
   readonly store: MemoryStore;
   private readonly gate: SurpriseGate;
   private readonly retriever: Retriever;
@@ -47,6 +51,7 @@ export class SurpriseMemory {
 
   constructor(opts: SurMemOptions = {}) {
     this.embedder = opts.embedder ?? new HashEmbedder();
+    this.queryEmbedder = opts.queryEmbedder ?? this.embedder;
     this.store = new MemoryStore(opts.store);
     this.gate = new SurpriseGate(opts.gate);
     this.retriever = new Retriever(this.store, opts.retrieval);
@@ -115,7 +120,7 @@ export class SurpriseMemory {
 
   /** Read path: hybrid-scored top-k memories for context injection. */
   async recall(query: string, k = 5): Promise<ScoredMemory[]> {
-    const [vector] = await this.embedder.embed([query]);
+    const [vector] = await this.queryEmbedder.embed([query]);
     return this.retriever.retrieve(vector, k);
   }
 
@@ -151,8 +156,9 @@ export type { MemoryRecord } from "./types";
 export type { LLMJudge } from "./gate";
 export type { Summarizer } from "./consolidation";
 export type { ScoredMemory } from "./retrieval";
-export { HashEmbedder, OpenAIEmbedder } from "./embeddings";
+export { HashEmbedder, OpenAIEmbedder, cosine } from "./embeddings";
 export type { Embedder } from "./embeddings";
 export { OpenAIJudge, OpenAISummarizer } from "./judge";
 export { JsonPersister, SqlitePersister } from "./persistence";
 export type { Persister } from "./persistence";
+export { GgufEmbedder } from "./local-embedder";
