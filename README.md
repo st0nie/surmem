@@ -72,7 +72,13 @@ Built-in SQLite provides WAL-backed storage and FTS5 session search. Durable mem
 | `surmem_skill` | Create/view/delete structured Pi-native procedural skills |
 | `surmem_clear` | Explicitly clear one scope with a confirmation phrase |
 
-`/surmem` opens a compact settings/status menu in TUI mode. `/surmem status` works in all modes.
+`/surmem` opens an interactive menu in TUI mode. The title shows active memory counts; from the menu you can:
+
+- **Manage project memories** / **Manage global memories** — full CRUD per scope: list recent memories, search, add (episodic or semantic), view/edit text, and delete. Edits keep the record ID and writes are safety-scanned and re-embedded. Both edits and deletes write a recovery file under `recovery/` first, so the previous version can be brought back with `surmem_restore`.
+- **Status details** — show embedder, judge, arbiter, storage path, and warnings.
+- Toggle common settings (`snapshotSize`, `autoCandidates`, `autoMaintenance`, `sessionSearch`) and export both scopes to JSON.
+
+`/surmem status` prints a one-line summary and works in all modes.
 
 ## Data layout
 

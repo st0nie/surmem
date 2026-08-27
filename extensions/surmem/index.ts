@@ -1042,16 +1042,47 @@ export default function surmemExtension(pi: ExtensionAPI) {
 
   async function showMenu(ctx: ExtensionCommandContext): Promise<void> {
     const current = requireMemories();
-    const choice = await ctx.ui.select("SurMem", [
-      `Status — ${current.global.stats.active} global / ${current.project.stats.active} project`,
-      `snapshotSize = ${config.snapshotSize}`,
-      `autoCandidates = ${config.autoCandidates}`,
-      `autoMaintenance = ${config.autoMaintenance}`,
-      `sessionSearch = ${config.sessionSearch}`,
-      "Export now",
-      "Close",
-    ]);
-    if (!choice || choice === "Close" || choice.startsWith("Status")) return;
+    const choice = await ctx.ui.select(
+      `SurMem — ${current.global.stats.active} global / ${current.project.stats.active} project`,
+      [
+        "Manage project memories",
+        "Manage global memories",
+        "Status details",
+        `snapshotSize = ${config.snapshotSize}`,
+        `autoCandidates = ${config.autoCandidates}`,
+        `autoMaintenance = ${config.autoMaintenance}`,
+        `sessionSearch = ${config.sessionSearch}`,
+        "Export now",
+        "Close",
+      ],
+    );
+    if (!choice || choice === "Close") return;
+    if (choice === "Manage project memories") {
+      await manageScope(ctx, "project");
+      await showMenu(ctx);
+      return;
+    }
+    if (choice === "Manage global memories") {
+      await manageScope(ctx, "global");
+      await showMenu(ctx);
+      return;
+    }
+    if (choice === "Status details") {
+      const lines = [
+        `global: ${current.global.stats.active} active / ${current.global.stats.total} total (${current.global.stats.superseded} superseded)`,
+        `project: ${current.project.stats.active} active / ${current.project.stats.total} total (${current.project.stats.superseded} superseded)`,
+        `embedder: ${embedderName}`,
+        `judge: ${judgeName}`,
+        `arbiter: ${arbiterName}`,
+        `project: ${projectName} (${projectKey})`,
+        `storage: ${storageRoot}`,
+        `config: ${configPath}`,
+      ];
+      if (lastError) lines.push(`warning: ${lastError}`);
+      ctx.ui.notify(lines.join("\n"), lastError ? "warning" : "info");
+      await showMenu(ctx);
+      return;
+    }
     if (choice === "Export now") {
       const path = join(storageRoot, "exports", `surmem-${Date.now()}.json`);
       await atomicJson(path, {
@@ -1061,6 +1092,7 @@ export default function surmemExtension(pi: ExtensionAPI) {
         projectMemory: current.project.export(),
       });
       ctx.ui.notify(`Exported to ${path}`, "info");
+      await showMenu(ctx);
       return;
     }
     const key = choice.split(" = ")[0] as
@@ -1085,6 +1117,162 @@ export default function surmemExtension(pi: ExtensionAPI) {
     refreshSnapshot();
     ctx.ui.notify(`Saved ${key} to ${configPath}. Session search changes apply next session.`, "info");
     await showMenu(ctx);
+  }
+
+  function previewText(text: string, max: number): string {
+    const clean = sanitizeForPrompt(text, max).replace(/\s+/g, " ").trim();
+    return clean.length < text.replace(/\s+/g, " ").trim().length ? `${clean}…` : clean;
+  }
+
+  async function manageScope(ctx: ExtensionCommandContext, scope: MemoryScope): Promise<void> {
+    const ADD = "+ Add memory";
+    const SEARCH = "? Search memories";
+    const BACK = "← Back";
+    for (;;) {
+      const memory = requireMemories()[scope];
+      const records = memory.list({ limit: 20 });
+      const labels = records.map(
+        (record, index) =>
+          `${index + 1}. ${record.id.slice(0, 8)} [${record.kind}] ${previewText(record.text, 60)}`,
+      );
+      const choice = await ctx.ui.select(`SurMem — ${scope} memories (${memory.stats.active} active)`, [
+        ADD,
+        SEARCH,
+        ...labels,
+        BACK,
+      ]);
+      if (!choice || choice === BACK) return;
+      if (choice === ADD) {
+        await addMemory(ctx, scope);
+        continue;
+      }
+      if (choice === SEARCH) {
+        await searchScope(ctx, scope);
+        continue;
+      }
+      const record = records[labels.indexOf(choice)];
+      if (record) await recordActions(ctx, scope, record);
+    }
+  }
+
+  async function addMemory(ctx: ExtensionCommandContext, scope: MemoryScope): Promise<void> {
+    const kind = await ctx.ui.select(`New ${scope} memory — kind`, ["episodic", "semantic"]);
+    if (!kind) return;
+    const text = (await ctx.ui.editor(`New ${scope} ${kind} memory (Esc cancels)`, ""))?.trim();
+    if (!text) return;
+    try {
+      const result = await requireMemories()[scope].observe(text, {
+        scope,
+        project: scope === "project" ? projectName : undefined,
+        kind: kind === "semantic" ? Kind.SEMANTIC : Kind.EPISODIC,
+        metadata: { origin: "surmem-ui" },
+      });
+      mutationsSinceMaintenance++;
+      refreshSnapshot();
+      ctx.ui.notify(
+        `${result.verdict} id=${result.record?.id.slice(0, 8) ?? "none"}${result.reason ? ` — ${result.reason}` : ""}`,
+        "info",
+      );
+    } catch (error) {
+      ctx.ui.notify(`Memory rejected: ${error instanceof Error ? error.message : String(error)}`, "error");
+    }
+  }
+
+  async function searchScope(ctx: ExtensionCommandContext, scope: MemoryScope): Promise<void> {
+    const BACK = "← Back";
+    const query = (await ctx.ui.input(`Search ${scope} memories`, "query"))?.trim();
+    if (!query) return;
+    const hits = await requireMemories()[scope].recall(
+      query,
+      10,
+      scope === "project" ? { scope, project: projectName } : { scope },
+    );
+    if (!hits.length) {
+      ctx.ui.notify(`No ${scope} memories match "${query}".`, "info");
+      return;
+    }
+    const labels = hits.map(
+      (hit, index) =>
+        `${index + 1}. ${hit.record.id.slice(0, 8)} [${hit.record.kind}] ${hit.score.toFixed(2)} ${previewText(hit.record.text, 50)}`,
+    );
+    const choice = await ctx.ui.select(`SurMem — ${hits.length} match(es) for "${query}"`, [...labels, BACK]);
+    if (!choice || choice === BACK) return;
+    const hit = hits[labels.indexOf(choice)];
+    if (hit) await recordActions(ctx, scope, hit.record);
+  }
+
+  async function recordActions(
+    ctx: ExtensionCommandContext,
+    scope: MemoryScope,
+    record: MemoryRecord,
+  ): Promise<void> {
+    const choice = await ctx.ui.select(
+      `Memory ${record.id.slice(0, 8)} (${scope}/${record.kind}): ${previewText(record.text, 80)}`,
+      ["View / edit", "Delete", "Back"],
+    );
+    if (choice === "View / edit") await editRecord(ctx, scope, record);
+    else if (choice === "Delete") await deleteRecord(ctx, scope, record);
+  }
+
+  async function editRecord(
+    ctx: ExtensionCommandContext,
+    scope: MemoryScope,
+    record: MemoryRecord,
+  ): Promise<void> {
+    const edited = await ctx.ui.editor(
+      `Edit ${scope} memory ${record.id.slice(0, 8)} (Esc cancels)`,
+      record.text,
+    );
+    if (edited === undefined) return;
+    const text = edited.trim();
+    if (!text) {
+      ctx.ui.notify("Memory text cannot be empty. Use Delete to remove it.", "warning");
+      return;
+    }
+    if (text === record.text) {
+      ctx.ui.notify("Memory unchanged.", "info");
+      return;
+    }
+    const memory = requireMemories()[scope];
+    // Keep the previous version recoverable, then replace via forget + explicit
+    // restore so the edit is safety-scanned, re-embedded, and tombstone-safe.
+    const recovery = recoveryRecord(record, scope);
+    await atomicJson(join(storageRoot, "recovery", `${recovery.recoveryId}.json`), recovery);
+    try {
+      await memory.forget(record.id);
+      await memory.restore({ ...record, text });
+    } catch (error) {
+      await memory.restore(record).catch(() => {});
+      ctx.ui.notify(
+        `Edit rejected: ${error instanceof Error ? error.message : String(error)} Previous version recovery: ${recovery.recoveryId}`,
+        "error",
+      );
+      return;
+    }
+    mutationsSinceMaintenance++;
+    refreshSnapshot();
+    ctx.ui.notify(
+      `Updated ${record.id.slice(0, 8)}. Previous version recovery: ${recovery.recoveryId}`,
+      "info",
+    );
+  }
+
+  async function deleteRecord(
+    ctx: ExtensionCommandContext,
+    scope: MemoryScope,
+    record: MemoryRecord,
+  ): Promise<void> {
+    const ok = await ctx.ui.confirm(
+      `Delete ${scope} memory ${record.id.slice(0, 8)}?`,
+      previewText(record.text, 200),
+    );
+    if (!ok) return;
+    const recovery = recoveryRecord(record, scope);
+    await atomicJson(join(storageRoot, "recovery", `${recovery.recoveryId}.json`), recovery);
+    await requireMemories()[scope].forget(record.id);
+    mutationsSinceMaintenance++;
+    refreshSnapshot();
+    ctx.ui.notify(`Deleted ${record.id.slice(0, 8)}. Recovery ID: ${recovery.recoveryId}`, "info");
   }
 
   pi.on("session_shutdown", async (_event, ctx) => {
