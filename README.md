@@ -88,16 +88,18 @@ Built-in SQLite provides WAL-backed storage and FTS5 session search. Durable mem
 ├── global.sqlite
 ├── sessions.sqlite
 ├── projects/
-│   └── <sha256-of-canonical-project-path>.sqlite
+│   └── <sha256-prefix-of-canonical-project-path>.sqlite
 ├── recovery/
 ├── exports/
 ├── migrations/
+├── embedding-daemon/
+├── judgment-daemon/
 └── skills/
     ├── global/<skill>/SKILL.md
     └── projects/<project-key>/<skill>/SKILL.md
 ```
 
-Files are created with private permissions (`0600`, directories `0700`). Project identity uses the canonical real path, not only the directory basename, so repositories with the same name do not collide.
+Files are created with private permissions (`0600`, directories `0700`). Project identity uses the canonical real path (project keys are the first 20 hex characters of its SHA-256), not only the directory basename, so repositories with the same name do not collide.
 
 ## Safety model
 
@@ -265,7 +267,7 @@ bun run pack:check  # verify published file set
 bun run demo
 ```
 
-Current deterministic suite: **38 tests, 115 assertions**, including concurrent writers, deletion non-resurrection, corruption behavior, legacy migrations, embedding reindex, safety fencing, extension lifecycle, FTS5, CJK fallback, and package integration.
+Current deterministic suite: **39 tests, 132 assertions across 6 files**, including concurrent writers, deletion non-resurrection, corruption behavior, legacy migrations, embedding reindex, safety fencing, extension lifecycle, FTS5, CJK fallback, and package integration.
 
 Optional real-model smoke test:
 

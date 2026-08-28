@@ -49,7 +49,7 @@ The extension owns two independent stores:
 1. **Global**: user preferences and facts valid across projects.
 2. **Project**: repository decisions, conventions, and procedures.
 
-Project identity is SHA-256 of the canonical real path. Basename-only identity is not safe because unrelated repositories can share a name.
+Project identity is the first 20 hex characters of the SHA-256 of the canonical real path. Basename-only identity is not safe because unrelated repositories can share a name.
 
 ## Retrieval
 
@@ -81,9 +81,10 @@ similarity >= dupSim
   → REINFORCE
 
 conflictSim <= similarity < dupSim and a judge is configured
-  → accept only a strict verdict with sufficient confidence
+  → accept only a strict verdict with sufficient confidence;
+    an uncertain judge falls back to the surprise check below
 
-adjusted_novelty > tauAdd
+momentum-adjusted surprise > tauAdd
   → ADD
 
 otherwise

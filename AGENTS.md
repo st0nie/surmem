@@ -48,6 +48,10 @@ SURMEM_GGUF_MODEL_PATH=/path/model.gguf bun run smoke:gguf
 - `src/gate.ts`: surprise write policy; similarity alone must not imply contradiction.
 - `src/retrieval.ts`: native vector/lexical/recency/strength ranking.
 - `src/consolidation.ts`: idempotent episodic-to-semantic consolidation.
+- `src/embeddings.ts`, `src/local-embedder.ts`: hash/OpenAI/GGUF embedders; GGUF imports stay lazy.
+- `src/daemon-embedder.ts`, `src/daemon-judge.ts`: clients for the shared cross-process embedding and judgment daemons (entries: `src/embedding-daemon-entry.mjs`, `src/judgment-daemon-entry.mjs`).
+- `src/judge.ts`: memorability/conflict judges and summarizers.
+- `src/errors.ts`, `src/types.ts`: typed errors and shared record types.
 - `src/safety.ts`: durable-write scanner and prompt sanitization.
 - `src/session-index.ts`: conversation FTS index; it must not index tool-result payloads.
 - `src/extension-config.ts`: strict, bounded, atomic extension config.
