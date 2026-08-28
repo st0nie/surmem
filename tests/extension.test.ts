@@ -170,6 +170,111 @@ describe("Pi extension integration", () => {
     }
   });
 
+  test("surmem_remember supports explicit supersedes and reports NOOP nearest hints", async () => {
+    const root = await mkdtemp(join(tmpdir(), "surmem-supersede-"));
+    const previousDir = process.env.SURMEM_DIR;
+    const previousSessions = process.env.PI_CODING_AGENT_SESSION_DIR;
+    const previousEmbedder = process.env.SURMEM_EMBEDDER;
+    const previousJudgeMode = process.env.SURMEM_JUDGE_MODE;
+    process.env.SURMEM_DIR = join(root, "data");
+    process.env.SURMEM_EMBEDDER = "hash";
+    process.env.SURMEM_JUDGE_MODE = "heuristic";
+    process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+
+    const handlers = new Map<string, Handler[]>();
+    const tools = new Map<string, any>();
+    const pi = {
+      on(name: string, handler: Handler) {
+        handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      },
+      registerTool(tool: any) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand() {},
+    } as any;
+    const context = {
+      cwd: "/workspace/surmem",
+      mode: "print",
+      hasUI: false,
+      signal: undefined,
+      ui: { notify() {}, select: async () => undefined, input: async () => undefined },
+      sessionManager: {
+        getSessionId: () => "supersede-test-session",
+        getSessionFile: () => join(root, "sessions", "session.jsonl"),
+      },
+    };
+
+    try {
+      surmemExtension(pi);
+      for (const handler of handlers.get("session_start") ?? []) {
+        await handler({ reason: "startup" }, context);
+      }
+      const remember = tools.get("surmem_remember");
+
+      const first = await remember.execute(
+        "remember-1",
+        { text: "The user just moved from Beijing to Shanghai.", scope: "project" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(first.details.verdict).toBe("ADD");
+
+      const noop = await remember.execute(
+        "remember-2",
+        { text: "The user moved from Beijing back to Shanghai again.", scope: "project" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(noop.details.verdict).toBe("NOOP");
+      expect(noop.details.nearestId).toBe(first.details.id);
+      expect(noop.content[0].text).toContain(`supersedes="${first.details.id}"`);
+
+      const updated = await remember.execute(
+        "remember-3",
+        {
+          text: "The user moved from Beijing back to Shanghai again.",
+          scope: "project",
+          supersedes: first.details.id,
+        },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(updated.details.verdict).toBe("UPDATE");
+      expect(updated.details.supersededId).toBe(first.details.id);
+
+      const crossScope = remember.execute(
+        "remember-4",
+        {
+          text: "The user moved from Beijing back to Shanghai once more.",
+          scope: "global",
+          supersedes: first.details.id,
+        },
+        undefined,
+        undefined,
+        context,
+      );
+      await expect(crossScope).rejects.toThrow(/was not found/);
+
+      for (const handler of handlers.get("session_shutdown") ?? []) {
+        await handler({ reason: "quit" }, context);
+      }
+    } finally {
+      if (previousDir === undefined) delete process.env.SURMEM_DIR;
+      else process.env.SURMEM_DIR = previousDir;
+      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
+      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
+      else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
+      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("/surmem menu manages project and global memories (add/edit/delete/search/status)", async () => {
     const root = await mkdtemp(join(tmpdir(), "surmem-menu-"));
     const previousDir = process.env.SURMEM_DIR;

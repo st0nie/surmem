@@ -25,7 +25,7 @@ embed + SurpriseGate
       │
       ├─ ADD ───────▶ new episodic/semantic/procedural record
       ├─ REINFORCE ─▶ access/strength update
-      ├─ UPDATE ────▶ new record + superseded link (judge only)
+      ├─ UPDATE ────▶ new record + superseded link (judge or explicit supersedes)
       └─ NOOP
       │
       ▼
@@ -88,10 +88,12 @@ momentum-adjusted surprise > tauAdd
   → ADD
 
 otherwise
-  → NOOP
+  → NOOP (the result reports the nearest blocking memory)
 ```
 
 Similarity does not establish contradiction. The Pi extension defaults to one shared local Qwen3-4B GGUF daemon for both judgment and arbitration, so this path consumes no remote-model tokens. If judgment is explicitly disabled or unavailable, related facts are not destructively superseded.
+
+A caller that knows a new fact refines, generalizes, or corrects an existing record can pass `supersedes=<id>` to `observe()` (or the `surmem_remember` tool). This performs a deterministic UPDATE after validating that the target exists, is still active, and belongs to the same scope. Explicit caller instructions are trusted; similarity alone never is.
 
 ## Persistence invariants
 

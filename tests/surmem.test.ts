@@ -83,6 +83,67 @@ describe("surprise gate", () => {
   });
 });
 
+describe("explicit supersede", () => {
+  test("supersedes performs an UPDATE even when the gate would NOOP", async () => {
+    const mem = makeMem();
+    const first = await mem.observe("The user just moved from Beijing to Shanghai.");
+    const r = await mem.observe("The user moved from Beijing back to Shanghai again.", {
+      supersedes: first.record?.id,
+    });
+    expect(r.verdict).toBe(WriteVerdict.UPDATE);
+    expect(r.reason).toBe("explicit-supersede");
+    expect(r.superseded?.id).toBe(first.record?.id);
+    expect(r.record?.sourceIds).toContain(first.record?.id);
+    const old = mem.store.get(first.record?.id ?? "");
+    expect(old?.supersededBy).toBe(r.record?.id);
+    expect(mem.store.active().map((memory) => memory.text)).not.toContain(
+      "The user just moved from Beijing to Shanghai.",
+    );
+  });
+
+  test("supersedes with an unknown ID is rejected", async () => {
+    const mem = makeMem();
+    await expect(
+      mem.observe("The user moved from Beijing to Shanghai.", { supersedes: crypto.randomUUID() }),
+    ).rejects.toThrow(/supersedes target .* was not found/);
+  });
+
+  test("supersedes of an already superseded record is rejected", async () => {
+    const mem = makeMem();
+    const first = await mem.observe("The user just moved from Beijing to Shanghai.");
+    await mem.observe("The user moved from Beijing back to Shanghai again.", {
+      supersedes: first.record?.id,
+    });
+    await expect(
+      mem.observe("The user moved from Beijing back to Shanghai once more.", {
+        supersedes: first.record?.id,
+      }),
+    ).rejects.toThrow(/already superseded/);
+  });
+
+  test("supersedes cannot cross scopes", async () => {
+    const mem = makeMem();
+    const globalFact = await mem.observe("The user prefers bun over npm everywhere.", {
+      scope: "global",
+    });
+    await expect(
+      mem.observe("The user prefers bun over npm in this repository.", {
+        scope: "project",
+        supersedes: globalFact.record?.id,
+      }),
+    ).rejects.toThrow(/belongs to scope/);
+  });
+
+  test("NOOP results expose the nearest blocking memory", async () => {
+    const mem = makeMem();
+    const first = await mem.observe("The user just moved from Beijing to Shanghai.");
+    const r = await mem.observe("The user moved from Beijing back to Shanghai again.");
+    expect(r.verdict).toBe(WriteVerdict.NOOP);
+    expect(r.record).toBeNull();
+    expect(r.nearest?.id).toBe(first.record?.id);
+  });
+});
+
 describe("retrieval", () => {
   test("recall ranks the most relevant memory first", async () => {
     const mem = makeMem();

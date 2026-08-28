@@ -1,9 +1,9 @@
 /** Production facade for surprise-gated, hybrid long-term memory. */
 
 import { type ConsolidationOptions, type ConsolidationResult, Consolidator } from "./consolidation";
-import { type Embedder, HashEmbedder, validateVector } from "./embeddings";
+import { cosine, type Embedder, HashEmbedder, validateVector } from "./embeddings";
 import { EmbeddingMismatchError, SensitiveContentError, ValidationError } from "./errors";
-import { type GateOptions, SurpriseGate } from "./gate";
+import { type GateDecision, type GateOptions, SurpriseGate } from "./gate";
 import { type RecallFilter, type RetrievalOptions, Retriever, type ScoredMemory } from "./retrieval";
 import { escapeXmlData, sanitizeForPrompt, scanMemoryContent } from "./safety";
 import { MemoryStore, type StoreOptions } from "./store";
@@ -36,6 +36,8 @@ export interface ObserveOptions {
   signal?: AbortSignal;
   allowSensitive?: boolean;
   kind?: Kind;
+  /** Explicitly supersede an existing active record ID (caller-instructed UPDATE). */
+  supersedes?: string;
 }
 
 export interface ObserveResult {
@@ -43,6 +45,8 @@ export interface ObserveResult {
   surprise: number;
   record: MemoryRecord | null;
   superseded: MemoryRecord | null;
+  /** Nearest active record that influenced the decision (set for REINFORCE/NOOP/UPDATE). */
+  nearest: MemoryRecord | null;
   reason?: string;
 }
 
@@ -167,6 +171,25 @@ export class SurpriseMemory {
     await this.reindexPromise;
   }
 
+  /**
+   * Build a deterministic UPDATE decision for a caller-instructed supersede.
+   * This bypasses the surprise gate but never bypasses validation: the target
+   * must exist, still be active, and belong to the same scope, so an explicit
+   * instruction can never destructively update an unrelated record.
+   */
+  private explicitSupersedeDecision(id: string, vector: number[], scope: MemoryScope): GateDecision {
+    const target = this.store.get(id);
+    if (!target)
+      throw new ValidationError(`supersedes target ${id} was not found (or was deleted) in this store.`);
+    if (target.supersededBy !== null)
+      throw new ValidationError(`supersedes target ${id} is already superseded by ${target.supersededBy}.`);
+    const targetScope = typeof target.metadata.scope === "string" ? target.metadata.scope : "project";
+    if (targetScope !== scope)
+      throw new ValidationError(`supersedes target ${id} belongs to scope "${targetScope}", not "${scope}".`);
+    const surprise = Math.max(0, 1 - cosine(vector, target.vector));
+    return { verdict: WriteVerdict.UPDATE, surprise, nearest: target, reason: "explicit-supersede" };
+  }
+
   async observe(
     text: string,
     metadataOrOptions: Record<string, unknown> | ObserveOptions = {},
@@ -178,7 +201,8 @@ export class SurpriseMemory {
       "project" in metadataOrOptions ||
       "signal" in metadataOrOptions ||
       "allowSensitive" in metadataOrOptions ||
-      "kind" in metadataOrOptions;
+      "kind" in metadataOrOptions ||
+      "supersedes" in metadataOrOptions;
     const options: ObserveOptions = looksLikeOptions
       ? (metadataOrOptions as ObserveOptions)
       : { metadata: metadataOrOptions as Record<string, unknown> };
@@ -195,7 +219,9 @@ export class SurpriseMemory {
       options.signal?.throwIfAborted();
       const [rawVector] = await this.embedder.embed([normalized], options.signal);
       const vector = validateVector(rawVector, this.embedder.dim, "memory embedding");
-      const decision = await this.gate.decide(normalized, vector, this.store.all(), options.signal);
+      const decision = options.supersedes
+        ? this.explicitSupersedeDecision(options.supersedes, vector, options.scope ?? "project")
+        : await this.gate.decide(normalized, vector, this.store.all(), options.signal);
       const metadata = {
         ...cleanMetadata(options.metadata ?? {}),
         scope: options.scope ?? "project",

@@ -61,7 +61,7 @@ Built-in SQLite provides WAL-backed storage and FTS5 session search. Durable mem
 
 | Tool | Purpose |
 |---|---|
-| `surmem_remember` | Store a durable fact with ADD/UPDATE/REINFORCE/NOOP gating |
+| `surmem_remember` | Store a durable fact with ADD/UPDATE/REINFORCE/NOOP gating; `supersedes` explicitly replaces a refined or corrected memory |
 | `surmem_recall` | Hybrid semantic + lexical recall across global/project scope |
 | `surmem_list` | Inspect recent memories and stable IDs |
 | `surmem_forget` | Delete by ID and create a recovery record |
@@ -71,6 +71,8 @@ Built-in SQLite provides WAL-backed storage and FTS5 session search. Durable mem
 | `surmem_export` | Create a private JSON export |
 | `surmem_skill` | Create/view/delete structured Pi-native procedural skills |
 | `surmem_clear` | Explicitly clear one scope with a confirmation phrase |
+
+Automatic deduplication cannot recognize every refinement: a corrected or generalized fact is semantically close to the memory it replaces, so the gate may REINFORCE or NOOP it. When a NOOP blocks a write, the result names the nearest blocking memory ID; pass it back as `supersedes` to deterministically replace the old record (it is retained as superseded for audit).
 
 `/surmem` opens an interactive menu in TUI mode. The title shows active memory counts; from the menu you can:
 
@@ -267,7 +269,7 @@ bun run pack:check  # verify published file set
 bun run demo
 ```
 
-Current deterministic suite: **39 tests, 132 assertions across 6 files**, including concurrent writers, deletion non-resurrection, corruption behavior, legacy migrations, embedding reindex, safety fencing, extension lifecycle, FTS5, CJK fallback, and package integration.
+Current deterministic suite: **45 tests, 151 assertions across 6 files**, including concurrent writers, deletion non-resurrection, corruption behavior, legacy migrations, embedding reindex, safety fencing, extension lifecycle, explicit supersede, FTS5, CJK fallback, and package integration.
 
 Optional real-model smoke test:
 
