@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { Kind, SqlitePersister, SurpriseMemory, WriteVerdict } from "../src/index";
+import { type Embedder, Kind, SqlitePersister, SurpriseMemory, WriteVerdict } from "../src/index";
 
 function makeMem(extra: Record<string, unknown> = {}): SurpriseMemory {
   return new SurpriseMemory({
@@ -141,6 +141,92 @@ describe("explicit supersede", () => {
     expect(r.verdict).toBe(WriteVerdict.NOOP);
     expect(r.record).toBeNull();
     expect(r.nearest?.id).toBe(first.record?.id);
+  });
+});
+
+describe("gate regressions", () => {
+  // Two unit vectors with an exact cosine similarity of s.
+  const unitPair = (s: number): [number[], number[]] => [
+    [1, 0],
+    [s, Math.sqrt(1 - s * s)],
+  ];
+
+  const scriptedEmbedder = (vectors: Record<string, number[]>): Embedder => ({
+    dim: 2,
+    fingerprint: "test:scripted:v1",
+    embed: (texts) =>
+      texts.map((text) => {
+        const vector = vectors[text];
+        if (!vector) throw new Error(`no scripted vector for: ${text}`);
+        return vector;
+      }),
+  });
+
+  test("rejected NOOP writes do not build momentum toward an ADD", async () => {
+    const [a, b] = unitPair(0.65);
+    const mem = new SurpriseMemory({
+      embedder: scriptedEmbedder({ "fact alpha one": a, "fact beta one": b }),
+      gate: { dupSim: 0.85, conflictSim: 0.6 },
+    });
+    await mem.observe("fact alpha one");
+    const surprises: string[] = [];
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const r = await mem.observe("fact beta one");
+      expect(r.verdict).toBe(WriteVerdict.NOOP);
+      surprises.push(r.surprise.toFixed(6));
+    }
+    expect(new Set(surprises).size).toBe(1);
+    expect(mem.store.active()).toHaveLength(1);
+  });
+
+  test("an isolated write below conflictSim ADDs instead of falling into a dead zone", async () => {
+    const [a, b] = unitPair(0.575);
+    const mem = new SurpriseMemory({
+      embedder: scriptedEmbedder({ "fact alpha two": a, "fact beta two": b }),
+      gate: { dupSim: 0.85, conflictSim: 0.6 },
+    });
+    await mem.observe("fact alpha two");
+    const r = await mem.observe("fact beta two");
+    expect(r.verdict).toBe(WriteVerdict.ADD);
+    expect(mem.store.active()).toHaveLength(2);
+  });
+
+  test("the gate rejects a tauAdd that would recreate the dead zone", () => {
+    expect(() => new SurpriseMemory({ gate: { tauAdd: 0.45, conflictSim: 0.6 } })).toThrow(/dead zone/);
+  });
+
+  test("short texts require a higher near-duplicate bar before REINFORCE", async () => {
+    const [a, b] = unitPair(0.88);
+    const mem = new SurpriseMemory({
+      embedder: scriptedEmbedder({ "short alpha fact": a, "short beta fact": b }),
+      gate: { dupSim: 0.85, conflictSim: 0.6 },
+    });
+    await mem.observe("short alpha fact");
+    const r = await mem.observe("short beta fact");
+    expect(r.verdict).not.toBe(WriteVerdict.REINFORCE);
+    expect(mem.store.active()).toHaveLength(1);
+  });
+
+  test("long texts still REINFORCE at the normal near-duplicate bar", async () => {
+    const [a, b] = unitPair(0.88);
+    const longAlpha =
+      "alpha one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen";
+    const longBeta =
+      "beta one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen";
+    const mem = new SurpriseMemory({
+      embedder: scriptedEmbedder({ [longAlpha]: a, [longBeta]: b }),
+      gate: { dupSim: 0.85, conflictSim: 0.6 },
+    });
+    await mem.observe(longAlpha);
+    const r = await mem.observe(longBeta);
+    expect(r.verdict).toBe(WriteVerdict.REINFORCE);
+    expect(mem.store.active()).toHaveLength(1);
+  });
+
+  test("the gate rejects shortTextDupSim below dupSim", () => {
+    expect(() => new SurpriseMemory({ gate: { dupSim: 0.9, shortTextDupSim: 0.8 } })).toThrow(
+      /shortTextDupSim/,
+    );
   });
 });
 

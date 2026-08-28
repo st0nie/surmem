@@ -77,7 +77,7 @@ Semantic/procedural memories use the slower semantic decay rate.
 ## Write policy
 
 ```text
-similarity >= dupSim
+similarity >= dupSim (shortTextDupSim when the text has fewer than shortTextTokens tokens)
   → REINFORCE
 
 conflictSim <= similarity < dupSim and a judge is configured
@@ -90,6 +90,13 @@ momentum-adjusted surprise > tauAdd
 otherwise
   → NOOP (the result reports the nearest blocking memory)
 ```
+
+Defaults: `tauAdd` 0.40, `dupSim` 0.85, `conflictSim` 0.60, `shortTextTokens` 16, `shortTextDupSim` 0.92. Two invariants are validated at construction and reconfiguration:
+
+- `tauAdd <= 1 - conflictSim`. Isolated writes can only ADD when `1 - similarity > tauAdd`; a larger `tauAdd` would leave similarities in `[1 - tauAdd, conflictSim)` in an unjudged dead zone where every isolated write is NOOP.
+- `shortTextDupSim >= dupSim`. Short texts embed noisily and share most of their hashed features, so cosine overstates their similarity; they must clear a higher bar before REINFORCE can merge a distinct fact or silently strengthen a contradicting one.
+
+Momentum is accumulated only from accepted writes (ADD/REINFORCE/UPDATE). Rejected NOOP attempts never enter the novelty window, so rapidly retrying a rejected fact cannot build enough momentum to force it through the gate.
 
 Similarity does not establish contradiction. The Pi extension defaults to one shared local Qwen3-4B GGUF daemon for both judgment and arbitration, so this path consumes no remote-model tokens. If judgment is explicitly disabled or unavailable, related facts are not destructively superseded.
 
