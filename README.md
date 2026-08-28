@@ -64,12 +64,12 @@ Built-in SQLite provides WAL-backed storage and FTS5 session search. Durable mem
 | `surmem_remember` | Store a durable fact with ADD/UPDATE/REINFORCE/NOOP gating; `supersedes` explicitly replaces a refined or corrected memory |
 | `surmem_recall` | Hybrid semantic + lexical recall across global/project scope |
 | `surmem_list` | Inspect recent memories and stable IDs |
-| `surmem_forget` | Delete by ID and create a recovery record |
-| `surmem_restore` | Restore a deleted memory by recovery ID |
+| `surmem_forget` | Delete by ID and create a recovery record; a skill-backed memory also removes its on-disk skill files |
+| `surmem_restore` | Restore a deleted memory by recovery ID; recreates skill files when the recovery record carries them |
 | `surmem_status` | Store, model, index, configuration, and error health report |
 | `surmem_session_search` | Search past Pi JSONL conversations through SQLite FTS5 |
 | `surmem_export` | Create a private JSON export |
-| `surmem_skill` | Create/view/delete structured Pi-native procedural skills |
+| `surmem_skill` | Create/view/delete structured Pi-native procedural skills; delete also tombstones the backing memory record (recoverable via `surmem_restore`) |
 | `surmem_clear` | Explicitly clear one scope with a confirmation phrase |
 
 Automatic deduplication cannot recognize every refinement: a corrected or generalized fact is semantically close to the memory it replaces, so the gate may REINFORCE or NOOP it. When a NOOP blocks a write, the result names the nearest blocking memory ID; pass it back as `supersedes` to deterministically replace the old record (it is retained as superseded for audit).

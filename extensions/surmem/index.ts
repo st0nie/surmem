@@ -2,9 +2,9 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync } from "node:fs";
-import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -243,8 +243,48 @@ function mergeHits(groups: ScoredMemory[][], limit: number): ScoredMemory[] {
   return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
-function recoveryRecord(record: MemoryRecord, scope: MemoryScope) {
-  return { version: 1, recoveryId: randomUUID(), deletedAt: new Date().toISOString(), scope, record };
+function recoveryRecord(record: MemoryRecord, scope: MemoryScope, skillBody?: string) {
+  return {
+    version: 1,
+    recoveryId: randomUUID(),
+    deletedAt: new Date().toISOString(),
+    scope,
+    record,
+    ...(skillBody !== undefined ? { skillBody } : {}),
+  };
+}
+
+// A memory record backs an on-disk Pi skill when surmem_skill created it.
+// metadata is untrusted historical data: only accept paths that resolve to a
+// SKILL.md inside the skills root, never an arbitrary caller-supplied path.
+function skillPathFromRecord(record: MemoryRecord, skillsRoot: string): string | null {
+  if (record.metadata.origin !== "surmem-skill") return null;
+  const rawPath = record.metadata.path;
+  if (typeof rawPath !== "string") return null;
+  const resolved = resolve(rawPath);
+  if (basename(resolved) !== "SKILL.md") return null;
+  if (!resolved.startsWith(resolve(skillsRoot) + sep)) return null;
+  return resolved;
+}
+
+async function recreateSkillFiles(
+  skillPath: string,
+  body: string,
+  scope: MemoryScope,
+  projectKey: string | null,
+): Promise<boolean> {
+  if (existsSync(skillPath)) return false;
+  await mkdir(dirname(skillPath), { recursive: true, mode: 0o700 });
+  await writeFile(skillPath, body, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  const metaPath = `${skillPath}.meta.json`;
+  if (!existsSync(metaPath))
+    await atomicJson(metaPath, {
+      version: 1,
+      createdAt: new Date().toISOString(),
+      scope,
+      projectKey: scope === "project" ? projectKey : null,
+    });
+  return true;
 }
 
 export default function surmemExtension(pi: ExtensionAPI) {
@@ -737,15 +777,32 @@ export default function surmemExtension(pi: ExtensionAPI) {
       const memory = requireMemories()[params.scope];
       const record = memory.store.get(params.id);
       if (!record) throw new Error(`Memory ${params.id} was not found in ${params.scope} scope.`);
-      const recovery = recoveryRecord(record, params.scope);
+      // Skill-backed memories own on-disk files; keep both sides in sync so
+      // forgetting never leaves an orphan SKILL.md that resources_discover
+      // would still expose to Pi.
+      const skillPath = skillPathFromRecord(record, join(storageRoot, "skills"));
+      const skillBody = skillPath && existsSync(skillPath) ? await readFile(skillPath, "utf8") : undefined;
+      const recovery = recoveryRecord(record, params.scope, skillBody);
       const path = join(storageRoot, "recovery", `${recovery.recoveryId}.json`);
       await atomicJson(path, recovery);
       await memory.forget(params.id);
+      let skillNote = "";
+      if (skillPath) {
+        try {
+          await rm(dirname(skillPath), { recursive: true, force: true });
+          skillNote = " Skill files removed.";
+        } catch (error) {
+          skillNote = ` Warning: could not remove skill files at ${dirname(skillPath)}: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       mutationsSinceMaintenance++;
       refreshSnapshot();
       return {
         content: [
-          { type: "text" as const, text: `Forgot ${params.id}. Recovery ID: ${recovery.recoveryId}` },
+          {
+            type: "text" as const,
+            text: `Forgot ${params.id}.${skillNote} Recovery ID: ${recovery.recoveryId}`,
+          },
         ],
         details: { id: params.id, recoveryId: recovery.recoveryId, recoveryPath: path },
       };
@@ -765,6 +822,7 @@ export default function surmemExtension(pi: ExtensionAPI) {
         scope?: MemoryScope;
         record?: MemoryRecord;
         restoredAt?: string;
+        skillBody?: string;
       };
       if (
         raw.version !== 1 ||
@@ -784,12 +842,31 @@ export default function surmemExtension(pi: ExtensionAPI) {
           details: { restored: false } as Record<string, unknown>,
         };
       const restored = await requireMemories()[raw.scope].restore(raw.record, signal);
+      let skillNote = "";
+      const skillPath = skillPathFromRecord(raw.record, join(storageRoot, "skills"));
+      if (skillPath && typeof raw.skillBody === "string") {
+        try {
+          if (
+            await recreateSkillFiles(
+              skillPath,
+              raw.skillBody,
+              raw.scope,
+              raw.scope === "project" ? projectKey : null,
+            )
+          )
+            skillNote = " Skill files recreated.";
+        } catch (error) {
+          skillNote = ` Warning: could not recreate skill files at ${dirname(skillPath)}: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      }
       raw.restoredAt = new Date().toISOString();
       await atomicJson(path, raw);
       mutationsSinceMaintenance++;
       refreshSnapshot();
       return {
-        content: [{ type: "text" as const, text: `Restored ${restored.id} to ${raw.scope} memory.` }],
+        content: [
+          { type: "text" as const, text: `Restored ${restored.id} to ${raw.scope} memory.${skillNote}` },
+        ],
         details: { restored: true, id: restored.id, scope: raw.scope } as Record<string, unknown>,
       };
     },
@@ -946,11 +1023,33 @@ export default function surmemExtension(pi: ExtensionAPI) {
       if (!params.name) throw new Error("name is required.");
       const path = join(root, params.name, "SKILL.md");
       if (params.action === "delete") {
-        const { rm } = await import("node:fs/promises");
+        // Tombstone the backing memory record as well, otherwise it stays
+        // active with metadata.path pointing at deleted files. The recovery
+        // file carries the SKILL.md body so surmem_restore can recreate both
+        // sides.
+        const memory = requireMemories()[scope];
+        const record = memory.store
+          .all()
+          .find((candidate) => skillPathFromRecord(candidate, join(storageRoot, "skills")) === resolve(path));
+        let recoveryId: string | undefined;
+        const skillBody = existsSync(path) ? await readFile(path, "utf8") : undefined;
+        if (record) {
+          const recovery = recoveryRecord(record, scope, skillBody);
+          recoveryId = recovery.recoveryId;
+          await atomicJson(join(storageRoot, "recovery", `${recovery.recoveryId}.json`), recovery);
+          await memory.forget(record.id);
+        }
         await rm(dirname(path), { recursive: true, force: true });
+        mutationsSinceMaintenance++;
+        refreshSnapshot();
         return {
-          content: [{ type: "text" as const, text: `Deleted skill ${params.name}.` }],
-          details: { path } as Record<string, unknown>,
+          content: [
+            {
+              type: "text" as const,
+              text: `Deleted skill ${params.name}.${recoveryId ? ` Memory record removed; recovery ID: ${recoveryId}.` : ""}`,
+            },
+          ],
+          details: { path, recoveryId } as Record<string, unknown>,
         };
       }
       if (!params.description || !params.steps?.length || !params.verification?.length)
@@ -1280,12 +1379,26 @@ export default function surmemExtension(pi: ExtensionAPI) {
       previewText(record.text, 200),
     );
     if (!ok) return;
-    const recovery = recoveryRecord(record, scope);
+    const skillPath = skillPathFromRecord(record, join(storageRoot, "skills"));
+    const skillBody = skillPath && existsSync(skillPath) ? await readFile(skillPath, "utf8") : undefined;
+    const recovery = recoveryRecord(record, scope, skillBody);
     await atomicJson(join(storageRoot, "recovery", `${recovery.recoveryId}.json`), recovery);
     await requireMemories()[scope].forget(record.id);
+    let skillNote = "";
+    if (skillPath) {
+      try {
+        await rm(dirname(skillPath), { recursive: true, force: true });
+        skillNote = " Skill files removed.";
+      } catch (error) {
+        skillNote = ` Warning: could not remove skill files at ${dirname(skillPath)}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
     mutationsSinceMaintenance++;
     refreshSnapshot();
-    ctx.ui.notify(`Deleted ${record.id.slice(0, 8)}. Recovery ID: ${recovery.recoveryId}`, "info");
+    ctx.ui.notify(
+      `Deleted ${record.id.slice(0, 8)}.${skillNote} Recovery ID: ${recovery.recoveryId}`,
+      "info",
+    );
   }
 
   pi.on("session_shutdown", async (_event, ctx) => {

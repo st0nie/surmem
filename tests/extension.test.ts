@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -437,6 +438,126 @@ describe("Pi extension integration", () => {
       else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
       if (previousLegacyStore === undefined) delete process.env.SURMEM_STORE_PATH;
       else process.env.SURMEM_STORE_PATH = previousLegacyStore;
+      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
+      else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
+      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("skill and backing memory record are deleted and restored together", async () => {
+    const root = await mkdtemp(join(tmpdir(), "surmem-skill-"));
+    const previousDir = process.env.SURMEM_DIR;
+    const previousSessions = process.env.PI_CODING_AGENT_SESSION_DIR;
+    const previousEmbedder = process.env.SURMEM_EMBEDDER;
+    const previousJudgeMode = process.env.SURMEM_JUDGE_MODE;
+    process.env.SURMEM_DIR = join(root, "data");
+    process.env.SURMEM_EMBEDDER = "hash";
+    process.env.SURMEM_JUDGE_MODE = "heuristic";
+    process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+
+    const handlers = new Map<string, Handler[]>();
+    const tools = new Map<string, any>();
+    const pi = {
+      on(name: string, handler: Handler) {
+        handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      },
+      registerTool(tool: any) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand() {},
+    } as any;
+    const context = {
+      cwd: "/workspace/surmem",
+      mode: "print",
+      hasUI: false,
+      signal: undefined,
+      ui: { notify() {}, select: async () => undefined, input: async () => undefined },
+      sessionManager: {
+        getSessionId: () => "skill-test-session",
+        getSessionFile: () => join(root, "sessions", "session.jsonl"),
+      },
+    };
+    const skillFile = join(root, "data", "skills", "global", "test-skill", "SKILL.md");
+    const findSkillRecordId = async (): Promise<string | null> => {
+      const listed = await tools
+        .get("surmem_list")
+        .execute("list", { scope: "global", limit: 50 }, undefined, undefined, context);
+      const text = listed.content[0].text as string;
+      const match = text.match(/^- id=(\S+) .*\n {2}test-skill:/m);
+      return match ? match[1] : null;
+    };
+
+    try {
+      surmemExtension(pi);
+      for (const handler of handlers.get("session_start") ?? []) {
+        await handler({ reason: "startup" }, context);
+      }
+
+      const created = await tools.get("surmem_skill").execute(
+        "skill-create",
+        {
+          action: "create",
+          scope: "global",
+          name: "test-skill",
+          description: "Deterministic test skill procedure.",
+          steps: ["do the thing"],
+          verification: ["verify the thing"],
+        },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(created.content[0].text).toContain("Created Pi skill test-skill");
+      expect(existsSync(skillFile)).toBe(true);
+      const recordId = await findSkillRecordId();
+      expect(recordId).not.toBeNull();
+
+      // surmem_skill delete must tombstone the backing record and leave a
+      // recovery file carrying the SKILL.md body.
+      const deleted = await tools
+        .get("surmem_skill")
+        .execute(
+          "skill-delete",
+          { action: "delete", scope: "global", name: "test-skill" },
+          undefined,
+          undefined,
+          context,
+        );
+      expect(deleted.details.recoveryId).toBeString();
+      expect(existsSync(skillFile)).toBe(false);
+      expect(await findSkillRecordId()).toBeNull();
+
+      // Restore recreates both the record and the on-disk skill files.
+      const restored = await tools
+        .get("surmem_restore")
+        .execute("restore-1", { recoveryId: deleted.details.recoveryId }, undefined, undefined, context);
+      expect(restored.details.restored).toBe(true);
+      expect(restored.content[0].text).toContain("Skill files recreated");
+      expect(existsSync(skillFile)).toBe(true);
+      expect(await findSkillRecordId()).toBe(recordId);
+
+      // surmem_forget on a skill-backed record removes the files too.
+      const forgot = await tools
+        .get("surmem_forget")
+        .execute("forget-1", { id: recordId, scope: "global" }, undefined, undefined, context);
+      expect(forgot.content[0].text).toContain("Skill files removed");
+      expect(existsSync(skillFile)).toBe(false);
+      expect(await findSkillRecordId()).toBeNull();
+
+      const restoredAgain = await tools
+        .get("surmem_restore")
+        .execute("restore-2", { recoveryId: forgot.details.recoveryId }, undefined, undefined, context);
+      expect(restoredAgain.details.restored).toBe(true);
+      expect(existsSync(skillFile)).toBe(true);
+      expect(await findSkillRecordId()).toBe(recordId);
+    } finally {
+      if (previousDir === undefined) delete process.env.SURMEM_DIR;
+      else process.env.SURMEM_DIR = previousDir;
+      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
       if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
       else process.env.SURMEM_EMBEDDER = previousEmbedder;
       if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
