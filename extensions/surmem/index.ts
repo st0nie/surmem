@@ -1292,25 +1292,54 @@ export default function surmemExtension(pi: ExtensionAPI) {
 
   async function searchScope(ctx: ExtensionCommandContext, scope: MemoryScope): Promise<void> {
     const BACK = "← Back";
-    const query = (await ctx.ui.input(`Search ${scope} memories`, "query"))?.trim();
+    const NEW_SEARCH = "? Search memories";
+    let query = (await ctx.ui.input(`Search ${scope} memories`, "query"))?.trim();
     if (!query) return;
-    const hits = await requireMemories()[scope].recall(
-      query,
-      10,
-      scope === "project" ? { scope, project: projectName } : { scope },
-    );
-    if (!hits.length) {
-      ctx.ui.notify(`No ${scope} memories match "${query}".`, "info");
-      return;
+    // Only the initial query reinforces retrieval strength. Returning to the
+    // result list after viewing or editing a record re-runs recall with
+    // `reinforce: false` so re-displaying the same query cannot inflate it.
+    let reinforce = true;
+    for (;;) {
+      const hits = await requireMemories()[scope].recall(
+        query,
+        10,
+        scope === "project" ? { scope, project: projectName, reinforce } : { scope, reinforce },
+      );
+      reinforce = false;
+      if (!hits.length) {
+        const retry = await ctx.ui.select(`No ${scope} memories match "${query}".`, [NEW_SEARCH, BACK]);
+        if (!retry || retry === BACK) return;
+        const next = (await ctx.ui.input(`Search ${scope} memories`, "query"))?.trim();
+        if (!next) return;
+        query = next;
+        reinforce = true;
+        continue;
+      }
+      const labels = hits.map(
+        (hit, index) =>
+          `${index + 1}. ${hit.record.id.slice(0, 8)} [${hit.record.kind}] ${hit.score.toFixed(2)} ${previewText(hit.record.text, 50)}`,
+      );
+      for (;;) {
+        const choice = await ctx.ui.select(`SurMem — ${hits.length} match(es) for "${query}"`, [
+          ...labels,
+          NEW_SEARCH,
+          BACK,
+        ]);
+        if (!choice || choice === BACK) return;
+        if (choice === NEW_SEARCH) {
+          const next = (await ctx.ui.input(`Search ${scope} memories`, "query"))?.trim();
+          if (!next) continue;
+          query = next;
+          reinforce = true;
+          break;
+        }
+        const hit = hits[labels.indexOf(choice)];
+        if (hit) await recordActions(ctx, scope, hit.record);
+        // Back/ESC from the record view returns to the same result list;
+        // re-recall so edits and deletions are reflected.
+        break;
+      }
     }
-    const labels = hits.map(
-      (hit, index) =>
-        `${index + 1}. ${hit.record.id.slice(0, 8)} [${hit.record.kind}] ${hit.score.toFixed(2)} ${previewText(hit.record.text, 50)}`,
-    );
-    const choice = await ctx.ui.select(`SurMem — ${hits.length} match(es) for "${query}"`, [...labels, BACK]);
-    if (!choice || choice === BACK) return;
-    const hit = hits[labels.indexOf(choice)];
-    if (hit) await recordActions(ctx, scope, hit.record);
   }
 
   async function recordActions(

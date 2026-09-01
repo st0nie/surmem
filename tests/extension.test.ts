@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -438,6 +439,170 @@ describe("Pi extension integration", () => {
       else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
       if (previousLegacyStore === undefined) delete process.env.SURMEM_STORE_PATH;
       else process.env.SURMEM_STORE_PATH = previousLegacyStore;
+      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
+      else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
+      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("search results survive viewing a record and support re-search", async () => {
+    const root = await mkdtemp(join(tmpdir(), "surmem-search-"));
+    const previousDir = process.env.SURMEM_DIR;
+    const previousSessions = process.env.PI_CODING_AGENT_SESSION_DIR;
+    const previousEmbedder = process.env.SURMEM_EMBEDDER;
+    const previousJudgeMode = process.env.SURMEM_JUDGE_MODE;
+    process.env.SURMEM_DIR = join(root, "data");
+    process.env.SURMEM_EMBEDDER = "hash";
+    process.env.SURMEM_JUDGE_MODE = "heuristic";
+    process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+
+    const handlers = new Map<string, Handler[]>();
+    const tools = new Map<string, any>();
+    const commands = new Map<string, any>();
+    const pi = {
+      on(name: string, handler: Handler) {
+        handlers.set(name, [...(handlers.get(name) ?? []), handler]);
+      },
+      registerTool(tool: any) {
+        tools.set(tool.name, tool);
+      },
+      registerCommand(name: string, command: any) {
+        commands.set(name, command);
+      },
+    } as any;
+
+    const PYTHON_TEXT = "The project uses uv for every Python workflow including CI.";
+    const BUN_TEXT = "The project team decided to adopt bun for JavaScript tooling.";
+
+    const notifications: string[] = [];
+    const selectScript: Array<string | ((title: string, options: string[]) => string)> = [
+      "Manage project memories",
+      "? Search memories",
+      (title, options) => {
+        expect(title).toContain(`match(es) for "Python workflow"`);
+        const first = options.find((option) => option.startsWith("1. "));
+        expect(first).toBeDefined();
+        return first as string;
+      },
+      "View / edit",
+      (title, options) => {
+        // Back from the record view must land on the same result list,
+        // not reset to the unfiltered scope list.
+        expect(title).toContain(`match(es) for "Python workflow"`);
+        const second = options.find((option) => option.startsWith("2. "));
+        expect(second).toBeDefined();
+        return second as string;
+      },
+      "Delete",
+      (title, _options) => {
+        // The refresh after deletion reflects that only one record remains.
+        expect(title).toContain(`1 match(es) for "Python workflow"`);
+        return "? Search memories";
+      },
+      (title, options) => {
+        expect(title).toContain(`match(es) for "uv python"`);
+        const first = options.find((option) => option.startsWith("1. "));
+        expect(first).toBeDefined();
+        return first as string;
+      },
+      "Back",
+      (title, _options) => {
+        expect(title).toContain(`1 match(es) for "uv python"`);
+        return "← Back";
+      },
+      "← Back",
+      "Close",
+    ];
+    const inputScript = ["Python workflow", "uv python"];
+    const confirmScript = [true];
+    const editorScript = [PYTHON_TEXT];
+    const context = {
+      cwd: "/workspace/surmem",
+      mode: "tui",
+      hasUI: true,
+      signal: undefined,
+      ui: {
+        notify(message: string) {
+          notifications.push(message);
+        },
+        async select(title: string, options: string[]) {
+          const step = selectScript.shift();
+          if (step === undefined) throw new Error(`Unexpected select dialog: ${title}`);
+          const choice = typeof step === "function" ? step(title, options) : step;
+          if (!options.includes(choice))
+            throw new Error(`Scripted choice "${choice}" not offered by "${title}": ${options.join(" | ")}`);
+          return choice;
+        },
+        async input() {
+          const next = inputScript.shift();
+          if (next === undefined) throw new Error("Unexpected input dialog");
+          return next;
+        },
+        async editor() {
+          const next = editorScript.shift();
+          if (next === undefined) throw new Error("Unexpected editor dialog");
+          return next;
+        },
+        async confirm() {
+          const next = confirmScript.shift();
+          if (next === undefined) throw new Error("Unexpected confirm dialog");
+          return next;
+        },
+      },
+      sessionManager: {
+        getSessionId: () => "search-test-session",
+        getSessionFile: () => join(root, "sessions", "empty-session-not-created.jsonl"),
+      },
+    };
+
+    try {
+      surmemExtension(pi);
+      for (const handler of handlers.get("session_start") ?? []) {
+        await handler({ reason: "startup" }, context);
+      }
+      for (const [index, text] of [PYTHON_TEXT, BUN_TEXT].entries()) {
+        const remembered = await tools
+          .get("surmem_remember")
+          .execute(`remember-${index}`, { text, scope: "project" }, undefined, undefined, context);
+        expect(remembered.details.verdict).toBe("ADD");
+      }
+
+      await commands.get("surmem").handler("", context);
+
+      expect(selectScript).toHaveLength(0);
+      expect(inputScript).toHaveLength(0);
+      expect(confirmScript).toHaveLength(0);
+      expect(editorScript).toHaveLength(0);
+      expect(notifications.some((message) => message.includes("Memory unchanged."))).toBe(true);
+      expect(notifications.some((message) => message.includes("Deleted"))).toBe(true);
+
+      for (const handler of handlers.get("session_shutdown") ?? []) {
+        await handler({ reason: "quit" }, context);
+      }
+
+      // Returning to the result list re-runs recall without reinforcement, so
+      // the surviving record only counts the two real searches that matched it.
+      const projectsDir = join(root, "data", "projects");
+      const dbFile = (await readdir(projectsDir)).find((name) => name.endsWith(".sqlite"));
+      expect(dbFile).toBeDefined();
+      const db = new Database(join(projectsDir, dbFile as string), { readonly: true });
+      try {
+        const rows = db.query("SELECT payload FROM memories").all() as Array<{ payload: string }>;
+        const payloads = rows.map((row) => JSON.parse(row.payload) as { text: string; accessCount: number });
+        const survivor = payloads.find((payload) => payload.text === PYTHON_TEXT);
+        expect(survivor).toBeDefined();
+        expect(survivor?.accessCount).toBe(2);
+      } finally {
+        db.close();
+      }
+    } finally {
+      if (previousDir === undefined) delete process.env.SURMEM_DIR;
+      else process.env.SURMEM_DIR = previousDir;
+      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
       if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
       else process.env.SURMEM_EMBEDDER = previousEmbedder;
       if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
