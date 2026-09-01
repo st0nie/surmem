@@ -76,7 +76,7 @@ Automatic deduplication cannot recognize every refinement: a corrected or genera
 
 `/surmem` opens an interactive menu in TUI mode. The title shows active memory counts; from the menu you can:
 
-- **Manage project memories** / **Manage global memories** — full CRUD per scope: list recent memories, search, add (episodic or semantic), view/edit text, and delete. Edits keep the record ID and writes are safety-scanned and re-embedded. Both edits and deletes write a recovery file under `recovery/` first, so the previous version can be brought back with `surmem_restore`.
+- **Manage project memories** / **Manage global memories** — full CRUD per scope: list recent memories, search, add (episodic or semantic), view/edit text, and delete. Search results stay active after viewing or deleting a record, so you can inspect several hits or start a new search without re-entering the query. Edits keep the record ID and writes are safety-scanned and re-embedded. Both edits and deletes write a recovery file under `recovery/` first, so the previous version can be brought back with `surmem_restore`.
 - **Status details** — show embedder, judge, arbiter, storage path, and warnings.
 - Toggle common settings (`snapshotSize`, `autoCandidates`, `autoMaintenance`, `sessionSearch`) and export both scopes to JSON.
 
