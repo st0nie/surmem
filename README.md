@@ -145,11 +145,23 @@ Configuration is strictly range-validated, capped at 64 KiB, atomically replaced
 # Defaults shown; no configuration is required.
 export SURMEM_GGUF_MODEL_URI='hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf'
 export SURMEM_GGUF_DIM=768
-# optional: auto, cuda, metal, vulkan; CPU is default
+# optional: auto, cuda, metal, vulkan; macOS defaults to Metal, other platforms to CPU
 export SURMEM_GGUF_GPU=auto
 ```
 
 Use `SURMEM_GGUF_MODEL_PATH` to supply an already-downloaded model. Use `SURMEM_EMBEDDER=hash` only to explicitly disable neural embeddings.
+
+Model downloads default to Hugging Face outside China. Auto-detection uses only the local system timezone
+(no IP geolocation request); mainland China, Hong Kong, and Macau timezones use ModelScope mirrors. Override
+the choice when timezone detection is unsuitable:
+
+```bash
+export SURMEM_MODEL_SOURCE=auto         # default
+export SURMEM_MODEL_SOURCE=modelscope   # force ModelScope
+export SURMEM_MODEL_SOURCE=huggingface  # force Hugging Face
+```
+
+Explicit `SURMEM_GGUF_MODEL_URI`, `SURMEM_JUDGE_GGUF_URI`, and local model paths always take precedence.
 
 **OpenAI-compatible endpoint**:
 
@@ -200,6 +212,7 @@ Other paths:
 | `SURMEM_CONFIG_PATH` | `<SURMEM_DIR>/config.json` |
 | `SURMEM_STORE_PATH` | Only used as a legacy JSON migration source |
 | `SURMEM_HTTP_TIMEOUT_MS` | `30000` |
+| `SURMEM_MODEL_SOURCE` | `auto` (local timezone; ModelScope in China, Hugging Face elsewhere) |
 | `SURMEM_GGUF_DAEMON_IDLE_MS` | `1800000` (30 minutes) |
 | `SURMEM_JUDGE_DAEMON_IDLE_MS` | `1800000` (30 minutes) |
 | `SURMEM_DAEMON_MODEL_DIR` | `~/.cache/qmd/models` |

@@ -12,8 +12,9 @@ import { fileURLToPath } from "node:url";
 import type { Embedder } from "./embeddings";
 import { validateVector } from "./embeddings";
 import { PersistenceError, ValidationError } from "./errors";
+import { defaultEmbeddingModelUri, defaultGgufGpu, HUGGING_FACE_EMBEDDING_MODEL_URI } from "./model-runtime";
 
-export const DEFAULT_GGUF_MODEL_URI = "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+export const DEFAULT_GGUF_MODEL_URI = HUGGING_FACE_EMBEDDING_MODEL_URI;
 
 export interface DaemonGgufEmbedderOptions {
   daemonDir?: string;
@@ -124,13 +125,19 @@ async function ensureToken(path: string): Promise<string> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const token = randomBytes(32).toString("hex");
   try {
-    await writeFile(path, `${token}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await writeFile(path, `${token}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
     await chmod(path, 0o600);
     return token;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const existing = (await readFile(path, "utf8")).trim();
-    if (existing.length < 32) throw new PersistenceError(`Embedding daemon token is invalid: ${path}`);
+    if (existing.length < 32) {
+      throw new PersistenceError(`Embedding daemon token is invalid: ${path}`);
+    }
     return existing;
   }
 }
@@ -156,7 +163,12 @@ function requestJson<T>(options: {
         headers: {
           authorization: `Bearer ${options.token}`,
           connection: "close",
-          ...(body ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {}),
+          ...(body
+            ? {
+                "content-type": "application/json",
+                "content-length": Buffer.byteLength(body),
+              }
+            : {}),
         },
       },
       (response) => {
@@ -164,8 +176,9 @@ function requestJson<T>(options: {
         let size = 0;
         response.on("data", (chunk: Buffer) => {
           size += chunk.length;
-          if (size > 128 * 1024 * 1024) request.destroy(new Error("Embedding daemon response is too large."));
-          else chunks.push(chunk);
+          if (size > 128 * 1024 * 1024) {
+            request.destroy(new Error("Embedding daemon response is too large."));
+          } else chunks.push(chunk);
         });
         response.on("end", () => {
           try {
@@ -246,10 +259,10 @@ export class DaemonGgufEmbedder implements Embedder {
 
   constructor(options: DaemonGgufEmbedderOptions = {}, role: Role = "document", shared?: SharedClientState) {
     this.daemonDir = options.daemonDir ?? defaultDaemonDir();
-    this.modelUri = options.modelUri ?? DEFAULT_GGUF_MODEL_URI;
+    this.modelUri = options.modelUri ?? defaultEmbeddingModelUri();
     this.modelPath = options.modelPath;
     this.dim = positiveInteger(options.dim ?? 768, "dim", 1, 65_536);
-    this.gpu = options.gpu ?? false;
+    this.gpu = options.gpu ?? defaultGgufGpu();
     this.documentTemplate = options.documentTemplate ?? "title: none | text: {text}";
     this.queryTemplate = options.queryTemplate ?? "task: search result | query: {text}";
     if (!this.documentTemplate.includes("{text}") || !this.queryTemplate.includes("{text}")) {
@@ -338,7 +351,9 @@ export class DaemonGgufEmbedder implements Embedder {
         await handle.close();
         ownsLock = true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw error;
+        }
         const endpoint = await readEndpoint(endpointPath);
         const status = await healthy(endpoint, token, 1500);
         if (status) {
@@ -351,12 +366,15 @@ export class DaemonGgufEmbedder implements Embedder {
         }
         try {
           const info = await stat(lockPath);
-          if (Date.now() - info.mtimeMs > this.startupTimeoutMs) await unlink(lockPath);
+          if (Date.now() - info.mtimeMs > this.startupTimeoutMs) {
+            await unlink(lockPath);
+          }
         } catch {}
-        if (Date.now() >= deadline)
+        if (Date.now() >= deadline) {
           throw new Error(
             `Timed out waiting for GGUF embedding daemon. See ${join(this.daemonDir, "daemon.log")}`,
           );
+        }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
@@ -414,7 +432,9 @@ export class DaemonGgufEmbedder implements Embedder {
       throw new Error(`Timed out starting GGUF embedding daemon. See ${logPath}`);
     } finally {
       try {
-        if ((await readFile(lockPath, "utf8")) === ownerToken) await unlink(lockPath);
+        if ((await readFile(lockPath, "utf8")) === ownerToken) {
+          await unlink(lockPath);
+        }
       } catch {}
     }
   }

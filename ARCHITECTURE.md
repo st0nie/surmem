@@ -167,6 +167,12 @@ The default extension uses two cross-process loopback services:
 
 Both bind to `127.0.0.1` on an ephemeral port and require a private bearer token. Startup uses an exclusive lock, PID/health validation, atomic endpoint/state files, proxy-aware model download, and model-fingerprint fencing. Client HTTP requests disable keep-alive so they do not prevent one-shot Pi processes from exiting. Session shutdown disconnects clients but intentionally does not stop a daemon used by other Pi processes. Each daemon exits after its idle TTL.
 
+On macOS, local GGUF daemons default to Metal so `node-llama-cpp` can use its supported prebuilt binary instead
+of requiring a local C++ build. Other platforms retain the CPU default unless GPU selection is configured.
+Default model downloads use Hugging Face except when the local system timezone identifies mainland China,
+Hong Kong, or Macau, where equivalent ModelScope GGUF URLs are used. This local-only signal avoids IP
+geolocation; `SURMEM_MODEL_SOURCE` provides an explicit `auto`, `huggingface`, or `modelscope` override.
+
 ## Competitive design choices
 
 Compared with plain Markdown + qmd, SurMem removes the external search/index dependency and gives records stable IDs, vectors, revisions, provenance, strength, and tombstones.

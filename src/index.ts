@@ -64,21 +64,29 @@ export interface MemoryStats {
 }
 
 function cleanText(text: string, maxChars: number): string {
-  if (typeof text !== "string") throw new ValidationError("Memory text must be a string.");
+  if (typeof text !== "string") {
+    throw new ValidationError("Memory text must be a string.");
+  }
   const normalized = text.normalize("NFKC").replace(/\r\n?/g, "\n").trim();
-  if (!normalized) throw new ValidationError("Memory text must not be empty.");
-  if (normalized.length > maxChars)
+  if (!normalized) {
+    throw new ValidationError("Memory text must not be empty.");
+  }
+  if (normalized.length > maxChars) {
     throw new ValidationError(`Memory text exceeds the ${maxChars}-character limit.`);
+  }
   return normalized;
 }
 
 function cleanMetadata(value: Record<string, unknown>): Record<string, unknown> {
   try {
     const encoded = JSON.stringify(value);
-    if (encoded.length > 64 * 1024) throw new ValidationError("Memory metadata exceeds 64 KiB.");
+    if (encoded.length > 64 * 1024) {
+      throw new ValidationError("Memory metadata exceeds 64 KiB.");
+    }
     const decoded: unknown = JSON.parse(encoded);
-    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded))
+    if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
       throw new ValidationError("Memory metadata must be an object.");
+    }
     return decoded as Record<string, unknown>;
   } catch (error) {
     if (error instanceof ValidationError) throw error;
@@ -103,9 +111,13 @@ export class SurpriseMemory {
   constructor(opts: SurMemOptions = {}) {
     this.embedder = opts.embedder ?? new HashEmbedder();
     this.queryEmbedder = opts.queryEmbedder ?? this.embedder;
-    if (this.queryEmbedder.dim !== this.embedder.dim)
+    if (this.queryEmbedder.dim !== this.embedder.dim) {
       throw new ValidationError("Document and query embedders must use the same dimension.");
-    this.store = new MemoryStore({ ...opts.store, embeddingFingerprint: this.embedder.fingerprint });
+    }
+    this.store = new MemoryStore({
+      ...opts.store,
+      embeddingFingerprint: this.embedder.fingerprint,
+    });
     this.gate = new SurpriseGate(opts.gate);
     this.retriever = new Retriever(this.store, opts.retrieval);
     this.consolidator = new Consolidator(this.store, this.embedder, opts.consolidation);
@@ -128,8 +140,9 @@ export class SurpriseMemory {
           `Stored vectors use ${persisted}; configured embedder is ${this.embedder.fingerprint}.`,
         );
       }
-      if (this.reindexOnEmbeddingChange === "lazy") this.reindexRequired = true;
-      else await this.reindex();
+      if (this.reindexOnEmbeddingChange === "lazy") {
+        this.reindexRequired = true;
+      } else await this.reindex();
     } else if (persisted !== this.embedder.fingerprint) {
       this.store.setEmbeddingFingerprint(this.embedder.fingerprint);
       await this.maybeSave();
@@ -147,8 +160,9 @@ export class SurpriseMemory {
         batch.map((record) => record.text),
         signal,
       );
-      if (vectors.length !== batch.length)
+      if (vectors.length !== batch.length) {
         throw new ValidationError("Embedder returned the wrong number of vectors during reindex.");
+      }
       for (let index = 0; index < batch.length; index++) {
         batch[index].vector = validateVector(vectors[index], this.embedder.dim, `reindex vector ${index}`);
         batch[index].metadata.embeddingFingerprint = this.embedder.fingerprint;
@@ -179,15 +193,23 @@ export class SurpriseMemory {
    */
   private explicitSupersedeDecision(id: string, vector: number[], scope: MemoryScope): GateDecision {
     const target = this.store.get(id);
-    if (!target)
+    if (!target) {
       throw new ValidationError(`supersedes target ${id} was not found (or was deleted) in this store.`);
-    if (target.supersededBy !== null)
+    }
+    if (target.supersededBy !== null) {
       throw new ValidationError(`supersedes target ${id} is already superseded by ${target.supersededBy}.`);
+    }
     const targetScope = typeof target.metadata.scope === "string" ? target.metadata.scope : "project";
-    if (targetScope !== scope)
+    if (targetScope !== scope) {
       throw new ValidationError(`supersedes target ${id} belongs to scope "${targetScope}", not "${scope}".`);
+    }
     const surprise = Math.max(0, 1 - cosine(vector, target.vector));
-    return { verdict: WriteVerdict.UPDATE, surprise, nearest: target, reason: "explicit-supersede" };
+    return {
+      verdict: WriteVerdict.UPDATE,
+      surprise,
+      nearest: target,
+      reason: "explicit-supersede",
+    };
   }
 
   async observe(
@@ -256,14 +278,22 @@ export class SurpriseMemory {
             decision.nearest.supersededBy = record.id;
             this.store.markDirty(decision.nearest);
           }
-          return { ...decision, record, superseded: decision.nearest };
+          return {
+            ...decision,
+            record,
+            superseded: decision.nearest,
+          };
         }
         case WriteVerdict.REINFORCE: {
           if (decision.nearest) {
             touch(decision.nearest, 0.2 * (1 - decision.surprise));
             this.store.markDirty(decision.nearest);
           }
-          return { ...decision, record: decision.nearest, superseded: null };
+          return {
+            ...decision,
+            record: decision.nearest,
+            superseded: null,
+          };
         }
         case WriteVerdict.NOOP:
           return { ...decision, record: null, superseded: null };
@@ -286,7 +316,9 @@ export class SurpriseMemory {
     const [rawVector] = await this.queryEmbedder.embed([normalized], signal);
     const vector = validateVector(rawVector, this.queryEmbedder.dim, "query embedding");
     const hits = await this.store.exclusive(() => this.retriever.retrieve(normalized, vector, k, filter));
-    if (filter.reinforce !== false && hits.length > 0) await this.maybeSave();
+    if (filter.reinforce !== false && hits.length > 0) {
+      await this.maybeSave();
+    }
     return hits;
   }
 
@@ -300,7 +332,9 @@ export class SurpriseMemory {
     if (hits.length === 0) return "";
     const lines = hits.map(
       ({ record, score }) =>
-        `<memory id="${record.id}" kind="${record.kind}" score="${score.toFixed(3)}">${escapeXmlData(sanitizeForPrompt(record.text, 3000))}</memory>`,
+        `<memory id="${record.id}" kind="${record.kind}" score="${score.toFixed(3)}">${escapeXmlData(
+          sanitizeForPrompt(record.text, 3000),
+        )}</memory>`,
     );
     return [
       '<surmem-context trust="untrusted-data">',
@@ -331,7 +365,9 @@ export class SurpriseMemory {
     this.assertOpen();
     await this.ensureReindexed(signal);
     const result = await this.store.exclusive(() => this.consolidator.consolidate(signal));
-    if (result.created.length || result.reinforced.length) await this.maybeSave();
+    if (result.created.length || result.reinforced.length) {
+      await this.maybeSave();
+    }
     return result;
   }
 
@@ -353,11 +389,12 @@ export class SurpriseMemory {
     await this.ensureReindexed(signal);
     const text = cleanText(record.text, this.maxMemoryChars);
     const findings = scanMemoryContent(text);
-    if (findings.length > 0)
+    if (findings.length > 0) {
       throw new SensitiveContentError(
         `Imported memory rejected: ${findings.map((item) => item.id).join(", ")}.`,
         findings.map((item) => item.id),
       );
+    }
     const [rawVector] = await this.embedder.embed([text], signal);
     const restored: MemoryRecord = {
       ...record,
@@ -437,13 +474,19 @@ export class SurpriseMemory {
   }
 
   async health() {
-    return { stats: this.stats, persistence: await this.store.health(), config: this.config };
+    return {
+      stats: this.stats,
+      persistence: await this.store.health(),
+      config: this.config,
+    };
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     await this.store.close();
-    if (this.queryEmbedder !== this.embedder) await this.queryEmbedder.dispose?.();
+    if (this.queryEmbedder !== this.embedder) {
+      await this.queryEmbedder.dispose?.();
+    }
     await this.embedder.dispose?.();
     this.closed = true;
   }
@@ -479,7 +522,12 @@ export {
 } from "./errors";
 export type { LLMJudge, LLMJudgeDecision } from "./gate";
 export type { MemorabilityJudge } from "./judge";
-export { GgufMemorabilityJudge, OpenAIJudge, OpenAIMemorabilityJudge, OpenAISummarizer } from "./judge";
+export {
+  GgufMemorabilityJudge,
+  OpenAIJudge,
+  OpenAIMemorabilityJudge,
+  OpenAISummarizer,
+} from "./judge";
 export { GgufEmbedder } from "./local-embedder";
 export type { PersistenceSnapshot, Persister } from "./persistence";
 export { JsonPersister, SqlitePersister } from "./persistence";

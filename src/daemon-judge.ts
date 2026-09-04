@@ -12,10 +12,11 @@ import { fileURLToPath } from "node:url";
 import { ValidationError } from "./errors";
 import type { LLMJudge, LLMJudgeDecision } from "./gate";
 import type { MemorabilityJudge } from "./judge";
+import { defaultGgufGpu, defaultJudgeModelUri, HUGGING_FACE_JUDGE_MODEL_URI } from "./model-runtime";
 import { sanitizeForPrompt } from "./safety";
 import { WriteVerdict } from "./types";
 
-export const DEFAULT_JUDGE_MODEL_URI = "hf:ggml-org/Qwen3-4B-GGUF:Q4_K_M";
+export const DEFAULT_JUDGE_MODEL_URI = HUGGING_FACE_JUDGE_MODEL_URI;
 
 export interface DaemonMemoryJudgeOptions {
   daemonDir?: string;
@@ -117,7 +118,11 @@ async function token(path: string): Promise<string> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const value = randomBytes(32).toString("hex");
   try {
-    await writeFile(path, `${value}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await writeFile(path, `${value}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
     await chmod(path, 0o600);
     return value;
   } catch (error) {
@@ -147,7 +152,12 @@ function requestJson<T>(options: {
         headers: {
           authorization: `Bearer ${options.token}`,
           connection: "close",
-          ...(body ? { "content-type": "application/json", "content-length": Buffer.byteLength(body) } : {}),
+          ...(body
+            ? {
+                "content-type": "application/json",
+                "content-length": Buffer.byteLength(body),
+              }
+            : {}),
         },
       },
       (response) => {
@@ -158,9 +168,9 @@ function requestJson<T>(options: {
             const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as T & {
               error?: string;
             };
-            if ((response.statusCode ?? 500) >= 400)
+            if ((response.statusCode ?? 500) >= 400) {
               reject(new Error(payload.error ?? "Judgment daemon error."));
-            else resolve(payload);
+            } else resolve(payload);
           } catch (error) {
             reject(error);
           }
@@ -237,9 +247,9 @@ export class DaemonMemoryJudge implements MemorabilityJudge, LLMJudge {
 
   constructor(options: DaemonMemoryJudgeOptions = {}) {
     this.daemonDir = options.daemonDir ?? defaultDaemonDir();
-    this.modelUri = options.modelUri ?? DEFAULT_JUDGE_MODEL_URI;
+    this.modelUri = options.modelUri ?? defaultJudgeModelUri();
     this.modelPath = options.modelPath;
-    this.gpu = options.gpu ?? false;
+    this.gpu = options.gpu ?? defaultGgufGpu();
     this.startupTimeoutMs = integer(
       options.startupTimeoutMs ?? 30 * 60_000,
       "startupTimeoutMs",
@@ -288,8 +298,9 @@ export class DaemonMemoryJudge implements MemorabilityJudge, LLMJudge {
     const current = await endpoint(endpointPath);
     const currentHealth = await health(current, auth);
     if (currentHealth) {
-      if (currentHealth.fingerprint !== this.fingerprint)
+      if (currentHealth.fingerprint !== this.fingerprint) {
         throw new Error("A different judgment model is already running.");
+      }
       return { endpoint: current as Endpoint, token: auth };
     }
 
@@ -303,16 +314,23 @@ export class DaemonMemoryJudge implements MemorabilityJudge, LLMJudge {
         await handle.close();
         locked = true;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw error;
+        }
         const readyEndpoint = await endpoint(endpointPath);
         const ready = await health(readyEndpoint, auth);
-        if (ready) return { endpoint: readyEndpoint as Endpoint, token: auth };
+        if (ready) {
+          return { endpoint: readyEndpoint as Endpoint, token: auth };
+        }
         try {
           const info = await stat(lockPath);
-          if (Date.now() - info.mtimeMs > this.startupTimeoutMs) await unlink(lockPath);
+          if (Date.now() - info.mtimeMs > this.startupTimeoutMs) {
+            await unlink(lockPath);
+          }
         } catch {}
-        if (Date.now() >= deadline)
+        if (Date.now() >= deadline) {
           throw new Error(`Timed out waiting for judgment daemon: ${this.daemonDir}`);
+        }
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
@@ -345,17 +363,22 @@ export class DaemonMemoryJudge implements MemorabilityJudge, LLMJudge {
         closeSync(logFd);
       }
       while (Date.now() < deadline) {
-        if (child.exitCode !== null)
+        if (child.exitCode !== null) {
           throw new Error(`Judgment daemon exited with code ${child.exitCode}. See ${logPath}`);
+        }
         const readyEndpoint = await endpoint(endpointPath);
         const ready = await health(readyEndpoint, auth);
-        if (ready) return { endpoint: readyEndpoint as Endpoint, token: auth };
+        if (ready) {
+          return { endpoint: readyEndpoint as Endpoint, token: auth };
+        }
         await new Promise((resolve) => setTimeout(resolve, 500));
       }
       throw new Error(`Timed out starting judgment daemon. See ${logPath}`);
     } finally {
       try {
-        if ((await readFile(lockPath, "utf8")) === owner) await unlink(lockPath);
+        if ((await readFile(lockPath, "utf8")) === owner) {
+          await unlink(lockPath);
+        }
       } catch {}
     }
   }
@@ -388,7 +411,13 @@ export class DaemonMemoryJudge implements MemorabilityJudge, LLMJudge {
   }
 
   async assess(text: string, signal?: AbortSignal): Promise<string | null> {
-    const result = await this.call("/assess", { text: sanitizeForPrompt(text, 6000) }, signal);
+    const result = await this.call(
+      "/assess",
+      {
+        text: sanitizeForPrompt(text, 6000),
+      },
+      signal,
+    );
     const confidence = Number(result?.confidence);
     if (result?.memorable !== true || !Number.isFinite(confidence) || confidence < 0.72) return null;
     const canonical =
@@ -400,7 +429,10 @@ export class DaemonMemoryJudge implements MemorabilityJudge, LLMJudge {
     try {
       const result = await this.call(
         "/arbitrate",
-        { oldText: sanitizeForPrompt(nearestText, 4000), newText: sanitizeForPrompt(newText, 4000) },
+        {
+          oldText: sanitizeForPrompt(nearestText, 4000),
+          newText: sanitizeForPrompt(newText, 4000),
+        },
         signal,
       );
       const verdict = result?.verdict;
