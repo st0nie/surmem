@@ -6,11 +6,116 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import surmemExtension from "../extensions/surmem/index";
+import { loadExtensionConfig } from "../src/extension-config";
 import { HashEmbedder, Kind } from "../src/index";
 
 type Handler = (event: any, context: any) => Promise<any> | any;
 
 describe("Pi extension integration", () => {
+  test("experimental active memory appends policy only while enabled through settings", async () => {
+    const root = await mkdtemp(join(tmpdir(), "surmem-active-memory-"));
+    const configPath = join(root, "data", "config.json");
+    const environment = {
+      SURMEM_DIR: join(root, "data"),
+      SURMEM_CONFIG_PATH: configPath,
+      SURMEM_STORE_PATH: join(root, "legacy-memory.json"),
+      SURMEM_EMBEDDER: "hash",
+      SURMEM_JUDGE_MODE: "heuristic",
+    };
+    const previous = new Map(Object.keys(environment).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, environment);
+
+    const handlers = new Map<string, Handler>();
+    const commands = new Map<string, { handler: Handler }>();
+    const pi = {
+      on(name: string, handler: Handler) {
+        handlers.set(name, handler);
+      },
+      registerTool() {},
+      registerCommand(name: string, command: { handler: Handler }) {
+        commands.set(name, command);
+      },
+    } satisfies Parameters<typeof surmemExtension>[0];
+    const errors: string[] = [];
+    const selections: Array<(options: string[]) => string | undefined> = [];
+    const context = {
+      cwd: root,
+      mode: "tui",
+      ui: {
+        notify(message: string, level: string) {
+          if (level === "error") errors.push(message);
+        },
+        async select(_title: string, options: string[]) {
+          const select = selections.shift();
+          if (!select) throw new Error("Unexpected settings dialog");
+          return select(options);
+        },
+      },
+      sessionManager: {
+        getSessionId: () => "active-memory-test-session",
+        getSessionFile: () => undefined,
+      },
+    };
+
+    try {
+      await mkdir(environment.SURMEM_DIR, { recursive: true });
+      await writeFile(configPath, JSON.stringify({ autoMaintenance: false, sessionSearch: false }));
+      surmemExtension(pi);
+      const start = handlers.get("session_start");
+      const beforeStart = handlers.get("before_agent_start");
+      const command = commands.get("surmem");
+      if (!start || !beforeStart || !command) throw new Error("Missing extension lifecycle registration");
+      await start({ reason: "startup" }, context);
+      expect(errors).toEqual([]);
+
+      const event = { systemPrompt: "base-system-prompt-sentinel" };
+      const disabled = await beforeStart(event, context);
+      expect(disabled.systemPrompt.startsWith(event.systemPrompt)).toBe(true);
+      expect(disabled.systemPrompt).toContain("surmem_recall");
+      expect(disabled.systemPrompt).toContain("surmem_remember");
+      expect(disabled.systemPrompt).toContain("surmem_skill");
+
+      for (const enabled of [true, false]) {
+        selections.push(
+          (options) => {
+            const choice = options.find((option) => option.startsWith("experimentalActiveMemory = "));
+            expect(choice).toBeDefined();
+            return choice;
+          },
+          () => undefined,
+        );
+        await command.handler("settings", context);
+        expect(selections).toHaveLength(0);
+        expect((await loadExtensionConfig(configPath)).experimentalActiveMemory).toBe(enabled);
+        const result = await beforeStart(event, context);
+        if (enabled) {
+          expect(result.systemPrompt.startsWith(disabled.systemPrompt)).toBe(true);
+          const appended = result.systemPrompt.slice(disabled.systemPrompt.length);
+          expect(appended).toContain("surmem_recall");
+          expect(appended).toContain("surmem_remember");
+          expect(appended).toContain("surmem_forget");
+          expect(appended).toContain("supersedes");
+          expect(await beforeStart(event, context)).toEqual(result);
+          await start({ reason: "resume" }, context);
+          expect(await beforeStart(event, context)).toEqual(result);
+        } else {
+          expect(result).toEqual(disabled);
+        }
+        expect(errors).toEqual([]);
+      }
+    } finally {
+      try {
+        await handlers.get("session_shutdown")?.({ reason: "quit" }, context);
+      } finally {
+        for (const [key, value] of previous) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("registers production tools and completes remember/recall/recovery lifecycle", async () => {
     const root = await mkdtemp(join(tmpdir(), "surmem-extension-"));
     const previousDir = process.env.SURMEM_DIR;

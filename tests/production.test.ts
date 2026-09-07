@@ -3,7 +3,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadExtensionConfig, normalizeExtensionConfig, saveExtensionConfig } from "../src/extension-config";
+import {
+  DEFAULT_EXTENSION_CONFIG,
+  loadExtensionConfig,
+  normalizeExtensionConfig,
+  saveExtensionConfig,
+} from "../src/extension-config";
 import {
   type Embedder,
   HashEmbedder,
@@ -13,6 +18,7 @@ import {
   SensitiveContentError,
   SqlitePersister,
   SurpriseMemory,
+  ValidationError,
 } from "../src/index";
 import { scanMemoryContent } from "../src/safety";
 
@@ -229,6 +235,42 @@ describe("scopes, procedures, and strict configuration", () => {
     const result = await mem.observe("The project uses pnpm catalogs for shared versions.");
     expect(["ADD", "NOOP"]).toContain(result.verdict);
   });
+
+  test("experimental active memory defaults off for absent and legacy config", async () => {
+    expect(DEFAULT_EXTENSION_CONFIG.experimentalActiveMemory).toBe(false);
+    for (const value of [undefined, null, {}, { autoCandidates: true }]) {
+      expect(normalizeExtensionConfig(value).experimentalActiveMemory).toBe(false);
+    }
+    const dir = await tempDir("surmem-active-config-");
+    const path = join(dir, "config.json");
+    try {
+      expect((await loadExtensionConfig(path)).experimentalActiveMemory).toBe(false);
+      await writeFile(path, JSON.stringify({ snapshotSize: 5 }));
+      expect((await loadExtensionConfig(path)).experimentalActiveMemory).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.each([true, false])("experimental active memory accepts and persists %s", async (value) => {
+    const dir = await tempDir("surmem-active-config-");
+    const path = join(dir, "config.json");
+    try {
+      const config = normalizeExtensionConfig({ experimentalActiveMemory: value });
+      expect(config.experimentalActiveMemory).toBe(value);
+      await saveExtensionConfig(path, config);
+      expect((await loadExtensionConfig(path)).experimentalActiveMemory).toBe(value);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test.each(["true", "false", 0, 1, null, [], {}].map((value) => ({ value })))(
+    "experimental active memory rejects non-boolean %j",
+    ({ value }) => {
+      expect(() => normalizeExtensionConfig({ experimentalActiveMemory: value })).toThrow(ValidationError);
+    },
+  );
 
   test("extension config rejects unsafe ranges and saves atomically with private permissions", async () => {
     expect(() => normalizeExtensionConfig({ conflictSim: 0.9, dupSim: 0.8 })).toThrow();

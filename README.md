@@ -49,7 +49,7 @@ The package is ready for npm publication as `pi-surmem`; after publication it ca
 No qmd, API key, paid inference, or native SQLite addon is required. On first use SurMem automatically downloads two GGUF files into qmd's shared model cache:
 
 - `EmbeddingGemma-300M-Q8_0` (about 334 MB, 768 dimensions) for semantic vectors.
-- `Qwen3-4B-Q4_K_M` (about 2.5 GB) for durable-memory judgment and contradiction arbitration.
+- `Qwen3-4B-Instruct-2507` (Unsloth `UD-Q4_K_XL`, about 2.5 GB) for durable-memory judgment and contradiction arbitration.
 
 Each model runs in a private loopback daemon. All Pi processes share the same embedding PID and the same judgment PID; opening more sessions does not load duplicate model instances. Daemons use bearer-token authentication, private state files, progress reporting, crash-safe startup locks, proxy-aware downloads, and a 30-minute idle timeout.
 
@@ -79,6 +79,7 @@ Automatic deduplication cannot recognize every refinement: a corrected or genera
 - **Manage project memories** / **Manage global memories** — full CRUD per scope: list recent memories, search, add (episodic or semantic), view/edit text, and delete. Search results stay active after viewing or deleting a record, so you can inspect several hits or start a new search without re-entering the query. Edits keep the record ID and writes are safety-scanned and re-embedded. Both edits and deletes write a recovery file under `recovery/` first, so the previous version can be brought back with `surmem_restore`.
 - **Status details** — show embedder, judge, arbiter, storage path, and warnings.
 - Toggle common settings (`snapshotSize`, `autoCandidates`, `autoMaintenance`, `sessionSearch`) and export both scopes to JSON.
+- Toggle **experimental** proactive memory guidance (`experimentalActiveMemory`, off by default).
 
 `/surmem status` prints a one-line summary and works in all modes.
 
@@ -131,11 +132,14 @@ Edit `~/.pi/agent/surmem/config.json` or use `/surmem` for common settings:
   "snapshotSize": 8,
   "autoCandidates": true,
   "autoMaintenance": true,
+  "experimentalActiveMemory": false,
   "sessionSearch": true
 }
 ```
 
 Configuration is strictly range-validated, capped at 64 KiB, atomically replaced, and never overwritten when malformed.
+
+**Experimental active memory:** set `experimentalActiveMemory` to `true` to append short system-prompt guidance encouraging the agent to remember verified, reusable facts (preferences, solved-issue steps, OS and host environment). It guides recall before writing, scope selection, corrections via `supersedes`, and forgetting confirmed wrong, obsolete, or no-longer-useful records or records the user asks to forget—not merely unqueried memories. Secrets, guesses, and temporary task state are excluded. This is agent guidance, not guaranteed automatic capture; writes still use the existing tools and safety checks. The `/surmem` toggle takes effect on the next agent turn.
 
 ### Embedding backends
 
@@ -176,11 +180,13 @@ export SURMEM_EMBEDDING_DIM=1536
 
 ```bash
 # One Qwen model serves both roles; no remote tokens are consumed.
-export SURMEM_JUDGE_GGUF_URI='hf:ggml-org/Qwen3-4B-GGUF:Q4_K_M'
+export SURMEM_JUDGE_GGUF_URI='hf:unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf'
 # Optional local file override:
-export SURMEM_JUDGE_GGUF=/models/Qwen3-4B-Q4_K_M.gguf
+export SURMEM_JUDGE_GGUF=/models/Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf
 export SURMEM_JUDGE_GGUF_GPU=auto
 ```
+
+In ModelScope mode, the default judge downloads [the same Unsloth GGUF](https://modelscope.cn/models/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/master/Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf). EmbeddingGemma is unchanged.
 
 For constrained machines, explicitly use heuristic mode:
 

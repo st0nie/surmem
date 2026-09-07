@@ -5,11 +5,12 @@ export type ModelSource = "huggingface" | "modelscope";
 
 export const HUGGING_FACE_EMBEDDING_MODEL_URI =
   "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
-export const HUGGING_FACE_JUDGE_MODEL_URI = "hf:ggml-org/Qwen3-4B-GGUF:Q4_K_M";
+export const HUGGING_FACE_JUDGE_MODEL_URI =
+  "hf:unsloth/Qwen3-4B-Instruct-2507-GGUF/Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf";
 export const MODELSCOPE_EMBEDDING_MODEL_URI =
   "https://modelscope.cn/models/ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/resolve/master/embeddinggemma-300m-qat-Q8_0.gguf";
 export const MODELSCOPE_JUDGE_MODEL_URI =
-  "https://modelscope.cn/models/unsloth/Qwen3-4B-GGUF/resolve/master/Qwen3-4B-Q4_K_M.gguf";
+  "https://modelscope.cn/models/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/master/Qwen3-4B-Instruct-2507-UD-Q4_K_XL.gguf";
 
 const CHINA_TIME_ZONES = new Set([
   "Asia/Chongqing",

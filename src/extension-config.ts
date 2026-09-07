@@ -28,6 +28,7 @@ export interface ExtensionConfig {
   autoCandidates: boolean;
   autoMaintenance: boolean;
   sessionSearch: boolean;
+  experimentalActiveMemory: boolean;
 }
 
 export const DEFAULT_EXTENSION_CONFIG: ExtensionConfig = {
@@ -42,6 +43,7 @@ export const DEFAULT_EXTENSION_CONFIG: ExtensionConfig = {
   autoCandidates: true,
   autoMaintenance: true,
   sessionSearch: true,
+  experimentalActiveMemory: false,
 };
 
 function numberIn(
@@ -110,11 +112,16 @@ export function normalizeExtensionConfig(value: unknown): ExtensionConfig {
     autoCandidates: raw.autoCandidates ?? DEFAULT_EXTENSION_CONFIG.autoCandidates,
     autoMaintenance: raw.autoMaintenance ?? DEFAULT_EXTENSION_CONFIG.autoMaintenance,
     sessionSearch: raw.sessionSearch ?? DEFAULT_EXTENSION_CONFIG.sessionSearch,
+    experimentalActiveMemory:
+      raw.experimentalActiveMemory === undefined
+        ? DEFAULT_EXTENSION_CONFIG.experimentalActiveMemory
+        : raw.experimentalActiveMemory,
   };
   if (
     typeof config.autoCandidates !== "boolean" ||
     typeof config.autoMaintenance !== "boolean" ||
-    typeof config.sessionSearch !== "boolean"
+    typeof config.sessionSearch !== "boolean" ||
+    typeof config.experimentalActiveMemory !== "boolean"
   ) {
     throw new ValidationError("Boolean SurMem config values are invalid.");
   }
