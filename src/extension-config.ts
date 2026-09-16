@@ -28,7 +28,7 @@ export interface ExtensionConfig {
   autoCandidates: boolean;
   autoMaintenance: boolean;
   sessionSearch: boolean;
-  experimentalActiveMemory: boolean;
+  activeMemory: boolean;
 }
 
 export const DEFAULT_EXTENSION_CONFIG: ExtensionConfig = {
@@ -43,7 +43,7 @@ export const DEFAULT_EXTENSION_CONFIG: ExtensionConfig = {
   autoCandidates: true,
   autoMaintenance: true,
   sessionSearch: true,
-  experimentalActiveMemory: false,
+  activeMemory: true,
 };
 
 function numberIn(
@@ -74,7 +74,9 @@ export function normalizeExtensionConfig(value: unknown): ExtensionConfig {
     if (value == null) return { ...DEFAULT_EXTENSION_CONFIG };
     throw new ValidationError("SurMem config must be a JSON object.");
   }
-  const raw = value as Partial<ExtensionConfig>;
+  const raw = value as Partial<ExtensionConfig> & {
+    experimentalActiveMemory?: unknown;
+  };
   const config: ExtensionConfig = {
     tauAdd: numberIn(raw.tauAdd, DEFAULT_EXTENSION_CONFIG.tauAdd, 0, 1, "tauAdd"),
     dupSim: numberIn(raw.dupSim, DEFAULT_EXTENSION_CONFIG.dupSim, 0, 1, "dupSim"),
@@ -112,32 +114,42 @@ export function normalizeExtensionConfig(value: unknown): ExtensionConfig {
     autoCandidates: raw.autoCandidates ?? DEFAULT_EXTENSION_CONFIG.autoCandidates,
     autoMaintenance: raw.autoMaintenance ?? DEFAULT_EXTENSION_CONFIG.autoMaintenance,
     sessionSearch: raw.sessionSearch ?? DEFAULT_EXTENSION_CONFIG.sessionSearch,
-    experimentalActiveMemory:
-      raw.experimentalActiveMemory === undefined
-        ? DEFAULT_EXTENSION_CONFIG.experimentalActiveMemory
-        : raw.experimentalActiveMemory,
+    activeMemory: raw.activeMemory === undefined ? DEFAULT_EXTENSION_CONFIG.activeMemory : raw.activeMemory,
   };
+  if (raw.activeMemory === undefined && raw.experimentalActiveMemory !== undefined) {
+    if (typeof raw.experimentalActiveMemory !== "boolean") {
+      throw new ValidationError("Boolean SurMem config values are invalid.");
+    }
+    config.activeMemory = raw.experimentalActiveMemory;
+  }
   if (
     typeof config.autoCandidates !== "boolean" ||
     typeof config.autoMaintenance !== "boolean" ||
     typeof config.sessionSearch !== "boolean" ||
-    typeof config.experimentalActiveMemory !== "boolean"
+    typeof config.activeMemory !== "boolean"
   ) {
     throw new ValidationError("Boolean SurMem config values are invalid.");
   }
-  if (config.conflictSim >= config.dupSim)
+  if (config.conflictSim >= config.dupSim) {
     throw new ValidationError("conflictSim must be lower than dupSim.");
+  }
   return config;
 }
 
 export async function loadExtensionConfig(path: string): Promise<ExtensionConfig> {
   try {
     const info = await stat(path);
-    if (!info.isFile()) throw new ValidationError(`SurMem config is not a regular file: ${path}`);
-    if (info.size > 64 * 1024) throw new ValidationError("SurMem config exceeds 64 KiB.");
+    if (!info.isFile()) {
+      throw new ValidationError(`SurMem config is not a regular file: ${path}`);
+    }
+    if (info.size > 64 * 1024) {
+      throw new ValidationError("SurMem config exceeds 64 KiB.");
+    }
     return normalizeExtensionConfig(JSON.parse(await readFile(path, "utf8")));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...DEFAULT_EXTENSION_CONFIG };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { ...DEFAULT_EXTENSION_CONFIG };
+    }
     throw error;
   }
 }
@@ -153,11 +165,15 @@ export async function saveExtensionConfig(path: string, config: ExtensionConfig)
       handle = await open(lockPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
-        throw new Error(`Unable to lock SurMem config: ${path}`, { cause: error });
+        throw new Error(`Unable to lock SurMem config: ${path}`, {
+          cause: error,
+        });
       }
       try {
         const info = await stat(lockPath);
-        if (Date.now() - info.mtimeMs > 5 * 60_000) await unlink(lockPath);
+        if (Date.now() - info.mtimeMs > 5 * 60_000) {
+          await unlink(lockPath);
+        }
       } catch {}
       if (Date.now() >= deadline) {
         throw new Error(`SurMem config is being modified by another process: ${path}`, { cause: error });

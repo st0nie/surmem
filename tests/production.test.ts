@@ -99,8 +99,12 @@ describe("versioned persistence and recovery", () => {
     const dir = await tempDir("surmem-json-concurrent-");
     const path = join(dir, "memory.json");
     try {
-      const left = new SurpriseMemory({ store: { persister: new JsonPersister(path) } });
-      const right = new SurpriseMemory({ store: { persister: new JsonPersister(path) } });
+      const left = new SurpriseMemory({
+        store: { persister: new JsonPersister(path) },
+      });
+      const right = new SurpriseMemory({
+        store: { persister: new JsonPersister(path) },
+      });
       await Promise.all([left.load(), right.load()]);
       await Promise.all([
         left.observe("The user prefers concise technical explanations."),
@@ -128,7 +132,9 @@ describe("versioned persistence and recovery", () => {
       expect(id).toBeString();
       await seed.close();
 
-      const deleter = new SurpriseMemory({ store: { persistPath: path } });
+      const deleter = new SurpriseMemory({
+        store: { persistPath: path },
+      });
       const stale = new SurpriseMemory({ store: { persistPath: path } });
       await Promise.all([deleter.load(), stale.load()]);
       await deleter.forget(id as string);
@@ -173,7 +179,9 @@ describe("versioned persistence and recovery", () => {
       );
       db.close();
 
-      const mem = new SurpriseMemory({ store: { persister: new SqlitePersister(path) } });
+      const mem = new SurpriseMemory({
+        store: { persister: new SqlitePersister(path) },
+      });
       await mem.load();
       expect(mem.store.get("legacy-id")?.vector).toHaveLength(512);
       expect(mem.store.get("legacy-id")?.metadata.embeddingFingerprint).toBe(mem.embedder.fingerprint);
@@ -189,13 +197,19 @@ describe("versioned persistence and recovery", () => {
     const path = join(dir, "memory.json");
     try {
       const firstEmbedder = new DeterministicEmbedder("test:model-a", 1);
-      const first = new SurpriseMemory({ embedder: firstEmbedder, store: { persistPath: path } });
+      const first = new SurpriseMemory({
+        embedder: firstEmbedder,
+        store: { persistPath: path },
+      });
       await first.load();
       await first.observe("The project uses a blue-green deployment strategy.");
       await first.close();
 
       const secondEmbedder = new DeterministicEmbedder("test:model-b", 7);
-      const second = new SurpriseMemory({ embedder: secondEmbedder, store: { persistPath: path } });
+      const second = new SurpriseMemory({
+        embedder: secondEmbedder,
+        store: { persistPath: path },
+      });
       await second.load();
       expect(secondEmbedder.calls).toBeGreaterThan(0);
       expect(second.store.all()[0].metadata.embeddingFingerprint).toBe("test:model-b");
@@ -221,14 +235,24 @@ describe("scopes, procedures, and strict configuration", () => {
     });
     expect(mem.list({ scope: "global" })).toHaveLength(1);
     expect(mem.list({ project: "surmem" })[0].kind).toBe(Kind.PROCEDURAL);
-    expect(await mem.recall("release procedure", 5, { scope: "project", project: "surmem" })).toHaveLength(1);
+    expect(
+      await mem.recall("release procedure", 5, {
+        scope: "project",
+        project: "surmem",
+      }),
+    ).toHaveLength(1);
   });
 
   test("invalid judge output safely falls back instead of escaping the verdict switch", async () => {
     const mem = new SurpriseMemory({
       gate: {
         conflictSim: 0,
-        judge: { arbitrate: async () => ({ verdict: "DESTROY", confidence: 1 }) },
+        judge: {
+          arbitrate: async () => ({
+            verdict: "DESTROY",
+            confidence: 1,
+          }),
+        },
       },
     });
     await mem.observe("The project uses pnpm workspaces for all packages.");
@@ -236,41 +260,66 @@ describe("scopes, procedures, and strict configuration", () => {
     expect(["ADD", "NOOP"]).toContain(result.verdict);
   });
 
-  test("experimental active memory defaults off for absent and legacy config", async () => {
-    expect(DEFAULT_EXTENSION_CONFIG.experimentalActiveMemory).toBe(false);
+  test("active memory defaults on for absent and legacy config", async () => {
+    expect(DEFAULT_EXTENSION_CONFIG.activeMemory).toBe(true);
     for (const value of [undefined, null, {}, { autoCandidates: true }]) {
-      expect(normalizeExtensionConfig(value).experimentalActiveMemory).toBe(false);
+      expect(normalizeExtensionConfig(value).activeMemory).toBe(true);
     }
     const dir = await tempDir("surmem-active-config-");
     const path = join(dir, "config.json");
     try {
-      expect((await loadExtensionConfig(path)).experimentalActiveMemory).toBe(false);
+      expect((await loadExtensionConfig(path)).activeMemory).toBe(true);
       await writeFile(path, JSON.stringify({ snapshotSize: 5 }));
-      expect((await loadExtensionConfig(path)).experimentalActiveMemory).toBe(false);
+      expect((await loadExtensionConfig(path)).activeMemory).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
-  test.each([true, false])("experimental active memory accepts and persists %s", async (value) => {
+  test.each([true, false])("active memory accepts and persists %s", async (value) => {
     const dir = await tempDir("surmem-active-config-");
     const path = join(dir, "config.json");
     try {
-      const config = normalizeExtensionConfig({ experimentalActiveMemory: value });
-      expect(config.experimentalActiveMemory).toBe(value);
+      const config = normalizeExtensionConfig({
+        activeMemory: value,
+      });
+      expect(config.activeMemory).toBe(value);
       await saveExtensionConfig(path, config);
-      expect((await loadExtensionConfig(path)).experimentalActiveMemory).toBe(value);
+      expect((await loadExtensionConfig(path)).activeMemory).toBe(value);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
 
   test.each(["true", "false", 0, 1, null, [], {}].map((value) => ({ value })))(
-    "experimental active memory rejects non-boolean %j",
+    "active memory rejects non-boolean %j",
     ({ value }) => {
+      expect(() => normalizeExtensionConfig({ activeMemory: value })).toThrow(ValidationError);
       expect(() => normalizeExtensionConfig({ experimentalActiveMemory: value })).toThrow(ValidationError);
     },
   );
+
+  test.each([true, false])("active memory migrates experimental setting %s", async (value) => {
+    const dir = await tempDir("surmem-active-migration-");
+    const path = join(dir, "config.json");
+    try {
+      await writeFile(path, JSON.stringify({ experimentalActiveMemory: value }));
+      const config = await loadExtensionConfig(path);
+      expect(config.activeMemory).toBe(value);
+      await saveExtensionConfig(path, config);
+      const saved = JSON.parse(await readFile(path, "utf8"));
+      expect(saved.activeMemory).toBe(value);
+      expect(saved).not.toHaveProperty("experimentalActiveMemory");
+      expect(
+        normalizeExtensionConfig({
+          activeMemory: !value,
+          experimentalActiveMemory: value,
+        }).activeMemory,
+      ).toBe(!value);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
   test("extension config rejects unsafe ranges and saves atomically with private permissions", async () => {
     expect(() => normalizeExtensionConfig({ conflictSim: 0.9, dupSim: 0.8 })).toThrow();
@@ -278,7 +327,10 @@ describe("scopes, procedures, and strict configuration", () => {
     const dir = await tempDir("surmem-config-");
     const path = join(dir, "config.json");
     try {
-      const config = normalizeExtensionConfig({ snapshotSize: 5, autoCandidates: false });
+      const config = normalizeExtensionConfig({
+        snapshotSize: 5,
+        autoCandidates: false,
+      });
       await saveExtensionConfig(path, config);
       expect((await loadExtensionConfig(path)).snapshotSize).toBe(5);
       expect((await stat(path)).mode & 0o777).toBe(0o600);

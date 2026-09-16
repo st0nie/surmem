@@ -12,7 +12,7 @@ import { HashEmbedder, Kind } from "../src/index";
 type Handler = (event: any, context: any) => Promise<any> | any;
 
 describe("Pi extension integration", () => {
-  test("experimental active memory appends policy only while enabled through settings", async () => {
+  test("active memory defaults on and toggles through settings", async () => {
     const root = await mkdtemp(join(tmpdir(), "surmem-active-memory-"));
     const configPath = join(root, "data", "config.json");
     const environment = {
@@ -59,26 +59,36 @@ describe("Pi extension integration", () => {
 
     try {
       await mkdir(environment.SURMEM_DIR, { recursive: true });
-      await writeFile(configPath, JSON.stringify({ autoMaintenance: false, sessionSearch: false }));
+      await writeFile(
+        configPath,
+        JSON.stringify({
+          autoMaintenance: false,
+          sessionSearch: false,
+        }),
+      );
       surmemExtension(pi);
       const start = handlers.get("session_start");
       const beforeStart = handlers.get("before_agent_start");
       const command = commands.get("surmem");
-      if (!start || !beforeStart || !command) throw new Error("Missing extension lifecycle registration");
+      if (!start || !beforeStart || !command) {
+        throw new Error("Missing extension lifecycle registration");
+      }
       await start({ reason: "startup" }, context);
       expect(errors).toEqual([]);
 
       const event = { systemPrompt: "base-system-prompt-sentinel" };
-      const disabled = await beforeStart(event, context);
-      expect(disabled.systemPrompt.startsWith(event.systemPrompt)).toBe(true);
-      expect(disabled.systemPrompt).toContain("surmem_recall");
-      expect(disabled.systemPrompt).toContain("surmem_remember");
-      expect(disabled.systemPrompt).toContain("surmem_skill");
+      const initial = await beforeStart(event, context);
+      expect(initial.systemPrompt.startsWith(event.systemPrompt)).toBe(true);
+      expect(initial.systemPrompt).toContain("surmem_recall");
+      expect(initial.systemPrompt).toContain("surmem_remember");
+      expect(initial.systemPrompt).toContain("surmem_skill");
+      expect(initial.systemPrompt).toContain("surmem_forget");
+      let disabled: typeof initial;
 
-      for (const enabled of [true, false]) {
+      for (const enabled of [false, true]) {
         selections.push(
           (options) => {
-            const choice = options.find((option) => option.startsWith("experimentalActiveMemory = "));
+            const choice = options.find((option) => option.startsWith("activeMemory = "));
             expect(choice).toBeDefined();
             return choice;
           },
@@ -86,9 +96,10 @@ describe("Pi extension integration", () => {
         );
         await command.handler("settings", context);
         expect(selections).toHaveLength(0);
-        expect((await loadExtensionConfig(configPath)).experimentalActiveMemory).toBe(enabled);
+        expect((await loadExtensionConfig(configPath)).activeMemory).toBe(enabled);
         const result = await beforeStart(event, context);
         if (enabled) {
+          expect(result).toEqual(initial);
           expect(result.systemPrompt.startsWith(disabled.systemPrompt)).toBe(true);
           const appended = result.systemPrompt.slice(disabled.systemPrompt.length);
           expect(appended).toContain("surmem_recall");
@@ -99,7 +110,8 @@ describe("Pi extension integration", () => {
           await start({ reason: "resume" }, context);
           expect(await beforeStart(event, context)).toEqual(result);
         } else {
-          expect(result).toEqual(disabled);
+          disabled = result;
+          expect(result.systemPrompt).not.toContain("surmem_forget");
         }
         expect(errors).toEqual([]);
       }
@@ -128,7 +140,9 @@ describe("Pi extension integration", () => {
     process.env.SURMEM_JUDGE_MODE = "heuristic";
     process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
     process.env.SURMEM_STORE_PATH = join(root, "legacy-memory.json");
-    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, {
+      recursive: true,
+    });
     const [legacyVector] = new HashEmbedder().embed(["Legacy memory says this repository uses Bun."]);
     await writeFile(
       process.env.SURMEM_STORE_PATH,
@@ -192,19 +206,26 @@ describe("Pi extension integration", () => {
         await handler({ reason: "startup" }, context);
       }
       for (const handler of handlers.get("resources_discover") ?? []) {
-        const discovered = await handler({ cwd: context.cwd, reason: "startup" }, context);
+        const discovered = await handler(
+          {
+            cwd: context.cwd,
+            reason: "startup",
+          },
+          context,
+        );
         expect(discovered.skillPaths).toEqual([]);
       }
 
-      const remember = await tools
-        .get("surmem_remember")
-        .execute(
-          "remember-1",
-          { text: "The project always uses pnpm for package management.", scope: "project" },
-          undefined,
-          undefined,
-          context,
-        );
+      const remember = await tools.get("surmem_remember").execute(
+        "remember-1",
+        {
+          text: "The project always uses pnpm for package management.",
+          scope: "project",
+        },
+        undefined,
+        undefined,
+        context,
+      );
       expect(remember.details.verdict).toBe("ADD");
       const id = remember.details.id as string;
 
@@ -234,13 +255,23 @@ describe("Pi extension integration", () => {
           {
             message: {
               role: "user",
-              content: [{ type: "text", text: "Please remember that I always prefer concise answers." }],
+              content: [
+                {
+                  type: "text",
+                  text: "Please remember that I always prefer concise answers.",
+                },
+              ],
             },
           },
           context,
         );
       }
-      const originalMessages = [{ role: "user", content: [{ type: "text", text: "hello" }] }];
+      const originalMessages = [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+      ];
       const contextResults = [];
       for (const handler of handlers.get("context") ?? []) {
         contextResults.push(await handler({ messages: originalMessages }, context));
@@ -265,14 +296,18 @@ describe("Pi extension integration", () => {
     } finally {
       if (previousDir === undefined) delete process.env.SURMEM_DIR;
       else process.env.SURMEM_DIR = previousDir;
-      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
-      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
-      if (previousLegacyStore === undefined) delete process.env.SURMEM_STORE_PATH;
-      else process.env.SURMEM_STORE_PATH = previousLegacyStore;
-      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
-      else process.env.SURMEM_EMBEDDER = previousEmbedder;
-      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
-      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      if (previousSessions === undefined) {
+        delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      } else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
+      if (previousLegacyStore === undefined) {
+        delete process.env.SURMEM_STORE_PATH;
+      } else process.env.SURMEM_STORE_PATH = previousLegacyStore;
+      if (previousEmbedder === undefined) {
+        delete process.env.SURMEM_EMBEDDER;
+      } else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) {
+        delete process.env.SURMEM_JUDGE_MODE;
+      } else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -287,7 +322,9 @@ describe("Pi extension integration", () => {
     process.env.SURMEM_EMBEDDER = "hash";
     process.env.SURMEM_JUDGE_MODE = "heuristic";
     process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
-    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, {
+      recursive: true,
+    });
 
     const handlers = new Map<string, Handler[]>();
     const tools = new Map<string, any>();
@@ -305,7 +342,11 @@ describe("Pi extension integration", () => {
       mode: "print",
       hasUI: false,
       signal: undefined,
-      ui: { notify() {}, select: async () => undefined, input: async () => undefined },
+      ui: {
+        notify() {},
+        select: async () => undefined,
+        input: async () => undefined,
+      },
       sessionManager: {
         getSessionId: () => "supersede-test-session",
         getSessionFile: () => join(root, "sessions", "session.jsonl"),
@@ -321,7 +362,10 @@ describe("Pi extension integration", () => {
 
       const first = await remember.execute(
         "remember-1",
-        { text: "The user just moved from Beijing to Shanghai.", scope: "project" },
+        {
+          text: "The user just moved from Beijing to Shanghai.",
+          scope: "project",
+        },
         undefined,
         undefined,
         context,
@@ -330,7 +374,10 @@ describe("Pi extension integration", () => {
 
       const noop = await remember.execute(
         "remember-2",
-        { text: "The user moved from Beijing back to Shanghai again.", scope: "project" },
+        {
+          text: "The user moved from Beijing back to Shanghai again.",
+          scope: "project",
+        },
         undefined,
         undefined,
         context,
@@ -372,12 +419,15 @@ describe("Pi extension integration", () => {
     } finally {
       if (previousDir === undefined) delete process.env.SURMEM_DIR;
       else process.env.SURMEM_DIR = previousDir;
-      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
-      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
-      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
-      else process.env.SURMEM_EMBEDDER = previousEmbedder;
-      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
-      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      if (previousSessions === undefined) {
+        delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      } else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
+      if (previousEmbedder === undefined) {
+        delete process.env.SURMEM_EMBEDDER;
+      } else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) {
+        delete process.env.SURMEM_JUDGE_MODE;
+      } else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -394,7 +444,9 @@ describe("Pi extension integration", () => {
     process.env.SURMEM_JUDGE_MODE = "heuristic";
     process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
     process.env.SURMEM_STORE_PATH = join(root, "legacy-memory.json");
-    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, {
+      recursive: true,
+    });
 
     const handlers = new Map<string, Handler[]>();
     const tools = new Map<string, any>();
@@ -454,10 +506,13 @@ describe("Pi extension integration", () => {
         },
         async select(title: string, options: string[]) {
           const step = selectScript.shift();
-          if (step === undefined) throw new Error(`Unexpected select dialog: ${title}`);
+          if (step === undefined) {
+            throw new Error(`Unexpected select dialog: ${title}`);
+          }
           const choice = typeof step === "function" ? step(title, options) : step;
-          if (!options.includes(choice))
+          if (!options.includes(choice)) {
             throw new Error(`Scripted choice "${choice}" not offered by "${title}": ${options.join(" | ")}`);
+          }
           return choice;
         },
         async input() {
@@ -465,12 +520,16 @@ describe("Pi extension integration", () => {
         },
         async editor() {
           const next = editorScript.shift();
-          if (next === undefined) throw new Error("Unexpected editor dialog");
+          if (next === undefined) {
+            throw new Error("Unexpected editor dialog");
+          }
           return next;
         },
         async confirm() {
           const next = confirmScript.shift();
-          if (next === undefined) throw new Error("Unexpected confirm dialog");
+          if (next === undefined) {
+            throw new Error("Unexpected confirm dialog");
+          }
           return next;
         },
       },
@@ -540,14 +599,18 @@ describe("Pi extension integration", () => {
     } finally {
       if (previousDir === undefined) delete process.env.SURMEM_DIR;
       else process.env.SURMEM_DIR = previousDir;
-      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
-      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
-      if (previousLegacyStore === undefined) delete process.env.SURMEM_STORE_PATH;
-      else process.env.SURMEM_STORE_PATH = previousLegacyStore;
-      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
-      else process.env.SURMEM_EMBEDDER = previousEmbedder;
-      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
-      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      if (previousSessions === undefined) {
+        delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      } else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
+      if (previousLegacyStore === undefined) {
+        delete process.env.SURMEM_STORE_PATH;
+      } else process.env.SURMEM_STORE_PATH = previousLegacyStore;
+      if (previousEmbedder === undefined) {
+        delete process.env.SURMEM_EMBEDDER;
+      } else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) {
+        delete process.env.SURMEM_JUDGE_MODE;
+      } else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -562,7 +625,9 @@ describe("Pi extension integration", () => {
     process.env.SURMEM_EMBEDDER = "hash";
     process.env.SURMEM_JUDGE_MODE = "heuristic";
     process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
-    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, {
+      recursive: true,
+    });
 
     const handlers = new Map<string, Handler[]>();
     const tools = new Map<string, any>();
@@ -635,25 +700,34 @@ describe("Pi extension integration", () => {
         },
         async select(title: string, options: string[]) {
           const step = selectScript.shift();
-          if (step === undefined) throw new Error(`Unexpected select dialog: ${title}`);
+          if (step === undefined) {
+            throw new Error(`Unexpected select dialog: ${title}`);
+          }
           const choice = typeof step === "function" ? step(title, options) : step;
-          if (!options.includes(choice))
+          if (!options.includes(choice)) {
             throw new Error(`Scripted choice "${choice}" not offered by "${title}": ${options.join(" | ")}`);
+          }
           return choice;
         },
         async input() {
           const next = inputScript.shift();
-          if (next === undefined) throw new Error("Unexpected input dialog");
+          if (next === undefined) {
+            throw new Error("Unexpected input dialog");
+          }
           return next;
         },
         async editor() {
           const next = editorScript.shift();
-          if (next === undefined) throw new Error("Unexpected editor dialog");
+          if (next === undefined) {
+            throw new Error("Unexpected editor dialog");
+          }
           return next;
         },
         async confirm() {
           const next = confirmScript.shift();
-          if (next === undefined) throw new Error("Unexpected confirm dialog");
+          if (next === undefined) {
+            throw new Error("Unexpected confirm dialog");
+          }
           return next;
         },
       },
@@ -693,10 +767,18 @@ describe("Pi extension integration", () => {
       const projectsDir = join(root, "data", "projects");
       const dbFile = (await readdir(projectsDir)).find((name) => name.endsWith(".sqlite"));
       expect(dbFile).toBeDefined();
-      const db = new Database(join(projectsDir, dbFile as string), { readonly: true });
+      const db = new Database(join(projectsDir, dbFile as string), {
+        readonly: true,
+      });
       try {
         const rows = db.query("SELECT payload FROM memories").all() as Array<{ payload: string }>;
-        const payloads = rows.map((row) => JSON.parse(row.payload) as { text: string; accessCount: number });
+        const payloads = rows.map(
+          (row) =>
+            JSON.parse(row.payload) as {
+              text: string;
+              accessCount: number;
+            },
+        );
         const survivor = payloads.find((payload) => payload.text === PYTHON_TEXT);
         expect(survivor).toBeDefined();
         expect(survivor?.accessCount).toBe(2);
@@ -706,12 +788,15 @@ describe("Pi extension integration", () => {
     } finally {
       if (previousDir === undefined) delete process.env.SURMEM_DIR;
       else process.env.SURMEM_DIR = previousDir;
-      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
-      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
-      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
-      else process.env.SURMEM_EMBEDDER = previousEmbedder;
-      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
-      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      if (previousSessions === undefined) {
+        delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      } else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
+      if (previousEmbedder === undefined) {
+        delete process.env.SURMEM_EMBEDDER;
+      } else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) {
+        delete process.env.SURMEM_JUDGE_MODE;
+      } else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -726,7 +811,9 @@ describe("Pi extension integration", () => {
     process.env.SURMEM_EMBEDDER = "hash";
     process.env.SURMEM_JUDGE_MODE = "heuristic";
     process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
-    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, { recursive: true });
+    await mkdir(process.env.PI_CODING_AGENT_SESSION_DIR, {
+      recursive: true,
+    });
 
     const handlers = new Map<string, Handler[]>();
     const tools = new Map<string, any>();
@@ -744,7 +831,11 @@ describe("Pi extension integration", () => {
       mode: "print",
       hasUI: false,
       signal: undefined,
-      ui: { notify() {}, select: async () => undefined, input: async () => undefined },
+      ui: {
+        notify() {},
+        select: async () => undefined,
+        input: async () => undefined,
+      },
       sessionManager: {
         getSessionId: () => "skill-test-session",
         getSessionFile: () => join(root, "sessions", "session.jsonl"),
@@ -826,12 +917,15 @@ describe("Pi extension integration", () => {
     } finally {
       if (previousDir === undefined) delete process.env.SURMEM_DIR;
       else process.env.SURMEM_DIR = previousDir;
-      if (previousSessions === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
-      else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
-      if (previousEmbedder === undefined) delete process.env.SURMEM_EMBEDDER;
-      else process.env.SURMEM_EMBEDDER = previousEmbedder;
-      if (previousJudgeMode === undefined) delete process.env.SURMEM_JUDGE_MODE;
-      else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
+      if (previousSessions === undefined) {
+        delete process.env.PI_CODING_AGENT_SESSION_DIR;
+      } else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessions;
+      if (previousEmbedder === undefined) {
+        delete process.env.SURMEM_EMBEDDER;
+      } else process.env.SURMEM_EMBEDDER = previousEmbedder;
+      if (previousJudgeMode === undefined) {
+        delete process.env.SURMEM_JUDGE_MODE;
+      } else process.env.SURMEM_JUDGE_MODE = previousJudgeMode;
       await rm(root, { recursive: true, force: true });
     }
   });

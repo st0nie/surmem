@@ -158,7 +158,7 @@ A caller that knows a new fact refines, generalizes, or corrects an existing rec
 
 Session generation guards prevent late judge results from an old `/new`, `/resume`, `/fork`, or reload lifecycle from reaching a replacement session.
 
-The opt-in `experimentalActiveMemory` setting (default `false`) adds concise proactive remember/forget guidance in `before_agent_start`. The main agent still decides and invokes existing memory tools; the setting adds no background writes or persistence bypass.
+The `activeMemory` setting (default `true`) adds concise proactive remember/forget guidance in `before_agent_start`. The main agent still decides and invokes existing memory tools; the setting adds no background writes or persistence bypass. Legacy `experimentalActiveMemory` values are read when `activeMemory` is absent, preserving explicit opt-outs, and subsequent config saves use only the stable name.
 
 ## Shared model daemons
 
