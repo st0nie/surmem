@@ -1,0 +1,17 @@
+{
+  "name": "surmem",
+  "metadata": {
+    "description": "SurMem native memory integration for coding agents."
+  },
+  "owner": {
+    "name": "st0nie"
+  },
+  "plugins": [
+    {
+      "name": "surmem",
+      "source": "./",
+      "description": "Scoped long-term memory shared across coding agents.",
+      "category": "productivity"
+    }
+  ]
+}

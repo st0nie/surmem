@@ -38,8 +38,16 @@ scoped MemoryStore ──▶ immediate CAS/transactional persistence
 Pi sessions ──▶ incremental SQLite FTS5 session index
 Pi skills   ──▶ structured SKILL.md procedural memory
 
-all Pi processes ─┬─▶ one shared EmbeddingGemma daemon
-                  └─▶ one shared Qwen3 judgment/arbitration daemon
+OpenCode native plugin ──▶ direct scoped backend + system context hook
+
+Codex CLI / Claude Code native plugins
+      ├─▶ SessionStart hook ──▶ bounded read-only memory snapshot
+      │
+      ▼
+bundled stdio MCP adapter ──▶ scoped SurpriseMemory facade
+
+all clients ─┬─▶ one shared EmbeddingGemma daemon per storage root
+             └─▶ one shared Qwen3 judgment/arbitration daemon per storage root
 ```
 
 ## Scope model
@@ -50,6 +58,28 @@ The extension owns two independent stores:
 2. **Project**: repository decisions, conventions, and procedures.
 
 Project identity is the first 20 hex characters of the SHA-256 of the canonical real path. Basename-only identity is not safe because unrelated repositories can share a name.
+
+## MCP integration
+
+`src/mcp/cli.ts` exposes SurMem through local stdio MCP, the integration contract shared by OpenCode, Codex CLI, and Claude Code. It reuses the core memory facade and persistence invariants rather than importing Pi APIs.
+
+The server binds project scope at launch with a required absolute `--project` directory. Its storage root defaults to Pi's existing location; `--storage-dir` or `SURMEM_DIR` allows isolation. Clients pointed at the same canonical project and storage root share records rather than maintaining host-specific copies.
+
+Protocol initialization and tool discovery are independent of lazy store/model initialization. Standard output is reserved for MCP messages. Memory mutations persist immediately, and server shutdown closes client resources without terminating shared daemons.
+
+Requests execute serially and reload stores before each operation so long-lived MCP clients see other clients' writes. Recall is read-only with respect to access strength. Forget recoveries use private, scope/project-fenced snapshots under `mcp-recovery/`, separate from Pi recovery files. Operations that explicitly delete or supersede Pi skill-backed records are rejected rather than leaving skill files inconsistent.
+
+MCP alone does not provide host lifecycle events. Native adapters add the supported context hooks described below; transcript indexing, transient candidate extraction, periodic maintenance, and learned skill discovery remain Pi features. No other host transcript is silently indexed.
+
+## Native host integrations
+
+`extensions/opencode/index.ts` exports an OpenCode plugin with direct tools backed by the scoped backend, not an MCP connection. Tool calls and context/lifecycle operations are serialized. The experimental system-transform hook adds a bounded, XML-escaped untrusted snapshot, cached per session until a user message or memory mutation. Idle events close store resources; final disposal prevents reopening.
+
+The repository root is also the Claude and Codex plugin root, with separate `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` manifests. Keeping core files inside that root makes copied plugin caches self-contained apart from runtime dependencies. Root `skills/memory/SKILL.md` supplies an explicit memory workflow and `hooks/hooks.json` declares a shared SessionStart command. The hook reads the canonical project from host JSON, lists existing scoped records without model calls, emits bounded escaped context, and reports optional failures without blocking the host.
+
+Claude loads root `.mcp.json` and resolves its plugin-root variable. Codex uses its manifest's inline MCP declaration instead: its MCP loader does not interpolate plugin-root variables, so the launcher runs at the plugin root and requires an explicit absolute `SURMEM_PROJECT`. Codex hook discovery does support the shared Claude-style root variable and SessionStart output, subject to host hook trust policy.
+
+Native MCP launchers reuse `src/mcp/cli.ts` for protocol, tools, persistence, and shutdown. Cached installations require explicit runtime dependency setup; hooks and launchers never automatically install packages. `activeMemory` controls proactive guidance, not automatic durable writes. None of these adapters uses session-end as its durability boundary.
 
 ## Retrieval
 

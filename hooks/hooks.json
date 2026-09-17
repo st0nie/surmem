@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run --no-install \"${CLAUDE_PLUGIN_ROOT}/src/claude/session-start.ts\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

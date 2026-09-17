@@ -1,0 +1,63 @@
+{
+  "name": "surmem",
+  "version": "1.0.0",
+  "description": "Scoped long-term memory with explicit, safety-scanned writes.",
+  "author": {
+    "name": "st0nie"
+  },
+  "repository": "https://github.com/st0nie/surmem",
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": {
+    "surmem": {
+      "command": "bun",
+      "args": ["run", "--no-install", "src/codex/mcp.ts"],
+      "cwd": ".",
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 120,
+      "env_vars": [
+        "SURMEM_PROJECT",
+        "SURMEM_DIR",
+        "SURMEM_CONFIG_PATH",
+        "PI_CODING_AGENT_DIR",
+        "SURMEM_EMBEDDER",
+        "SURMEM_EMBEDDING_API_KEY",
+        "SURMEM_EMBEDDING_BASE_URL",
+        "SURMEM_EMBEDDING_MODEL",
+        "SURMEM_EMBEDDING_DIM",
+        "SURMEM_HTTP_TIMEOUT_MS",
+        "SURMEM_MODEL_SOURCE",
+        "SURMEM_DAEMON_MODEL_DIR",
+        "SURMEM_GGUF_MODEL_PATH",
+        "SURMEM_GGUF_MODEL_URI",
+        "SURMEM_GGUF_DIM",
+        "SURMEM_GGUF_GPU",
+        "SURMEM_GGUF_STARTUP_TIMEOUT_MS",
+        "SURMEM_GGUF_REQUEST_TIMEOUT_MS",
+        "SURMEM_GGUF_DAEMON_IDLE_MS",
+        "SURMEM_JUDGE_MODE",
+        "SURMEM_JUDGE_API_KEY",
+        "SURMEM_JUDGE_MODEL",
+        "SURMEM_JUDGE_BASE_URL",
+        "SURMEM_ARBITER_API_KEY",
+        "SURMEM_ARBITER_MODEL",
+        "SURMEM_ARBITER_BASE_URL",
+        "SURMEM_JUDGE_GGUF",
+        "SURMEM_JUDGE_GGUF_URI",
+        "SURMEM_JUDGE_GGUF_GPU",
+        "SURMEM_JUDGE_STARTUP_TIMEOUT_MS",
+        "SURMEM_JUDGE_TIMEOUT_MS",
+        "SURMEM_JUDGE_DAEMON_IDLE_MS"
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "SurMem",
+    "shortDescription": "Shared global and project memory",
+    "longDescription": "Remember, recall, correct, and recover durable facts through a local memory store shared with Pi, OpenCode, and Claude Code.",
+    "developerName": "st0nie",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": ["Recall this project's conventions before starting work."]
+  }
+}

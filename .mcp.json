@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "surmem": {
+      "command": "bun",
+      "args": ["run", "--no-install", "${CLAUDE_PLUGIN_ROOT}/src/claude/mcp.ts"]
+    }
+  }
+}

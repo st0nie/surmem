@@ -1,0 +1,11 @@
+{
+  "name": "surmem",
+  "version": "1.0.0",
+  "description": "Scoped long-term memory with bounded session context, safe explicit memory tools, and memory workflow skills.",
+  "author": {
+    "name": "st0nie"
+  },
+  "repository": "https://github.com/st0nie/surmem",
+  "license": "MIT",
+  "keywords": ["memory", "sqlite", "mcp"]
+}

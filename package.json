@@ -1,15 +1,25 @@
 {
   "name": "pi-surmem",
   "version": "1.0.0",
-  "description": "Production-grade surprise-gated semantic memory for Pi: scoped, safe, crash-resistant, and zero-config",
+  "description": "Scoped, surprise-gated memory for Pi, OpenCode, Codex CLI, and Claude Code",
   "type": "module",
   "main": "src/index.ts",
+  "bin": {
+    "surmem-mcp": "src/mcp/cli.ts"
+  },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./opencode": "./extensions/opencode/index.ts"
   },
   "files": [
     "src",
     "extensions",
+    ".claude-plugin",
+    ".codex-plugin",
+    ".mcp.json",
+    "hooks",
+    "skills",
+    "bun.lock",
     "README.md",
     "ARCHITECTURE.md",
     "LICENSE"
@@ -43,7 +53,7 @@
   "scripts": {
     "demo": "bun run demo.ts",
     "test": "bun test",
-    "typecheck": "bun x tsc --noEmit && bun x tsc -p extensions/surmem/tsconfig.json",
+    "typecheck": "bun x tsc --noEmit && bun x tsc -p extensions/surmem/tsconfig.json && bun x tsc -p extensions/opencode/tsconfig.json",
     "lint": "bun x biome check .",
     "check": "bun run typecheck && bun run lint && bun test",
     "pack:check": "bun pm pack --dry-run",
@@ -64,5 +74,10 @@
     "@types/bun": "^1.4.0",
     "typebox": "^1.3.19",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@opencode-ai/plugin": "^1.18.31",
+    "zod": "^4.6.5"
   }
 }

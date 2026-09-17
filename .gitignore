@@ -9,3 +9,4 @@ memory.json
 *.lock
 *.tmp-*
 .DS_Store
+/.omo
