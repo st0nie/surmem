@@ -74,7 +74,7 @@ claude --plugin-dir /absolute/path/to/surmem
 For a cached native installation:
 
 ```bash
-claude plugin marketplace add /absolute/path/to/surmem
+claude plugin marketplace add https://github.com/st0nie/surmem.git
 claude plugin install surmem@surmem
 ```
 
@@ -85,7 +85,7 @@ The plugin provides `/surmem:memory`, a `SessionStart` memory snapshot, and auto
 Use a Codex release with native plugins and hooks (verified contract: 0.154.0):
 
 ```bash
-codex plugin marketplace add /absolute/path/to/surmem
+codex plugin marketplace add https://github.com/st0nie/surmem.git
 codex plugin add surmem@surmem
 
 cd /absolute/path/to/your-project
