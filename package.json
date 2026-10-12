@@ -1,7 +1,7 @@
 {
   "name": "pi-surmem",
   "version": "1.0.0",
-  "description": "Production-grade surprise-gated semantic memory for Pi: scoped, safe, crash-resistant, and zero-config",
+  "description": "[ARCHIVED] Production-grade surprise-gated semantic memory for Pi — superseded by realmem (https://github.com/WtzLAS/realmem)",
   "type": "module",
   "main": "src/index.ts",
   "exports": {
