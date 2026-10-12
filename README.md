@@ -3,8 +3,6 @@
 > [!CAUTION]
 > **This project is archived and no longer maintained.**
 > Please migrate to **[realmem](https://github.com/WtzLAS/realmem)**, the designated replacement for SurMem — it provides long-term memory for Pi and is actively developed.
->
-> **本项目已归档，停止维护。** 请改用替代品 **[realmem](https://github.com/WtzLAS/realmem)**（Pi 的长期记忆方案，持续开发中）。
 
 Production-grade long-term memory for [Pi](https://pi.dev): **surprise-gated learning, native hybrid retrieval, scoped SQLite storage, session search, safety scanning, and Pi-native procedural skills**.
 
